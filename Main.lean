@@ -35,9 +35,6 @@ instance [Deserialize α] [Deserialize ε] : Deserialize (Result α ε) where
     | .map [(.str "err", data)] => Deserialize.deserialize data >>= fun e => .ok (.err e)
     | _ => .error "Expected a Result (ok or err)"
 
-def toJson (x : α) [Serialize α] : Except String String :=
-  Json.serialize (Serialize.serialize x)
-
 def roundtrip (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Unit := do
   let serialized := Serialize.serialize x
   match Deserialize.deserialize serialized with
@@ -51,23 +48,23 @@ def roundtrip (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO U
 
 def main : IO Unit := do
   let person := Person.mk "Alice" 30
-  IO.println s!"Person: {toJson person}"
+  IO.println s!"Person: {Json.serialize person}"
 
   let employee := Employee.mk person "Engineering" (some "Bob")
-  IO.println s!"Employee: {toJson employee}"
+  IO.println s!"Employee: {Json.serialize employee}"
 
   let status1 := Status.active
   let status2 := Status.pending "awaiting approval"
-  IO.println s!"Status 1: {toJson status1}"
-  IO.println s!"Status 2: {toJson status2}"
+  IO.println s!"Status 1: {Json.serialize status1}"
+  IO.println s!"Status 2: {Json.serialize status2}"
 
   let result1 : Result Nat String := .ok 42
   let result2 : Result Nat String := .err "something went wrong"
-  IO.println s!"Result 1: {toJson result1}"
-  IO.println s!"Result 2: {toJson result2}"
+  IO.println s!"Result 1: {Json.serialize result1}"
+  IO.println s!"Result 2: {Json.serialize result2}"
 
   let people := [Person.mk "Alice" 30, Person.mk "Bob" 25]
-  IO.println s!"People list: {toJson people}"
+  IO.println s!"People list: {Json.serialize people}"
 
   IO.println ""
 

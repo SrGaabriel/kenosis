@@ -1,6 +1,17 @@
 # 🕊️ kenosis
 
-Kenosis is a serialization and deserialization library for Lean 4. It is written to be ergonomic, generic, and extensible. Kenosis plans to support a variety of serialization formats, including but not limited to JSON, TOML, and binary formats.
+Kenosis is a simple and lightweight serialization/deserialization library for Lean 4. It is written to be ergonomic, generic, and extensible. Kenosis plans to support a variety of serialization formats, including but not limited to JSON, TOML, and binary formats.
+
+# 🎨 Features
+
+[x] Tree-based serialization (aeson-style)
+[x] Generic and extensible
+[x] Derived instances for user-defined types
+[x] Basic JSON support
+[ ] Binary serialization
+[ ] More flexible serialization (serial names, skipping fields, etc.)
+[ ] Configurable rendering
+[ ] Visitor-based serialization (Maybe?)
 
 # ✨ Etymology
 

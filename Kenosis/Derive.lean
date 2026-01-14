@@ -20,7 +20,7 @@ private def getStructureFields (structName : Name) : MetaM (Array (Name × Name)
 
 private def mkStructSerializeBody (_structName : Name) (fields : Array (Name × Name)) (argName : Name) : MetaM (TSyntax `term) := do
   if fields.isEmpty then
-    `(KenosisValue.map [])
+    `(Kenosis.Value.map [])
   else
     let argIdent := mkRawIdent argName
     let serializeFn := mkCIdent ``Serialize.serialize
@@ -31,10 +31,10 @@ private def mkStructSerializeBody (_structName : Name) (fields : Array (Name × 
       let fieldAccess ← `($projIdent $argIdent)
       let serializedField ← `($serializeFn $fieldAccess)
       let fieldStrLit := Syntax.mkStrLit fieldStr
-      let pair ← `((KenosisValue.str $fieldStrLit, $serializedField))
+      let pair ← `((Kenosis.Value.str $fieldStrLit, $serializedField))
       fieldExprs := fieldExprs.push pair
     let listExpr ← `([$fieldExprs,*])
-    `(KenosisValue.map $listExpr)
+    `(Kenosis.Value.map $listExpr)
 
 private def mkCtorMatchAlt (view : InductiveVal) (ctorName : Name) : MetaM (Syntax × Syntax) := do
   let ctorInfo ← getConstInfoCtor ctorName
@@ -48,7 +48,7 @@ private def mkCtorMatchAlt (view : InductiveVal) (ctorName : Name) : MetaM (Synt
 
     if fieldParams.size == 0 then
       let pat : TSyntax `term := ⟨ctorIdent⟩
-      let body ← `(KenosisValue.str $tagStrLit)
+      let body ← `(Kenosis.Value.str $tagStrLit)
       return (pat.raw, body.raw)
     else if fieldParams.size == 1 then
       let fieldName := "__field0"
@@ -56,7 +56,7 @@ private def mkCtorMatchAlt (view : InductiveVal) (ctorName : Name) : MetaM (Synt
       let patternArgs : TSyntaxArray `term := ⟨[(⟨mkRawIdent (Name.mkSimple fieldName)⟩ : TSyntax `term)]⟩
       let pat ← `($ctorIdent $patternArgs*)
       let serializedField ← `($serializeFn $fieldIdent)
-      let body ← `(KenosisValue.map [(KenosisValue.str $tagStrLit, $serializedField)])
+      let body ← `(Kenosis.Value.map [(Kenosis.Value.str $tagStrLit, $serializedField)])
       return (pat.raw, body.raw)
     else
       let mut fieldNames : Array String := #[]
@@ -72,7 +72,7 @@ private def mkCtorMatchAlt (view : InductiveVal) (ctorName : Name) : MetaM (Synt
         let serializedField ← `($serializeFn $fieldIdent)
         fieldExprs := fieldExprs.push serializedField
       let listExpr ← `([$fieldExprs,*])
-      let body ← `(KenosisValue.map [(KenosisValue.str $tagStrLit, KenosisValue.list $listExpr)])
+      let body ← `(Kenosis.Value.map [(Kenosis.Value.str $tagStrLit, Kenosis.Value.list $listExpr)])
       return (pat.raw, body.raw)
 
 private def mkMatchExpr (discr : Syntax) (alts : Array (Syntax × Syntax)) : Syntax :=

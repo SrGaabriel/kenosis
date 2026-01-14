@@ -4,9 +4,9 @@ import Kenosis.Parser
 namespace Kenosis
 
 class Deserialize (α : Type) where
-  deserialize : KenosisValue -> Except String α
+  deserialize : Kenosis.Value -> Except String α
 
-def Deserializer.field {a : Type} (value : KenosisValue) (name : String) [d : Deserialize a] : ParserM a :=
+def Deserializer.field {a : Type} (value : Kenosis.Value) (name : String) [d : Deserialize a] : ParserM a :=
   match value with
   | .map objs =>
     match objs.find? (fun (k,_) => conforms name k) with
