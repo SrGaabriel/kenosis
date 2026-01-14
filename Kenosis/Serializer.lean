@@ -1,5 +1,0 @@
-namespace Kenosis
-
-
-
-end Kenosis

@@ -15,33 +15,22 @@ private def getStructureFieldNames (structName : Name) : MetaM (Array Name) := d
 
 private def mkStructDeserializeBody (structName : Name) (fields : Array Name) (argName : Name) : MetaM (TSyntax `term) := do
   let argIdent := mkRawIdent argName
-  let structNameStr := Syntax.mkStrLit (toString structName)
   let ctorIdent := mkCIdent (structName ++ `mk)
-  let decodeStructBegin := mkCIdent ``Deserializer.decodeStructBegin
-  let decodeField := mkCIdent ``Deserializer.decodeField
-  let decodeStructEnd := mkCIdent ``Deserializer.decodeStructEnd
-  let deserializeFn := mkCIdent ``Deserialize.deserialize
-  let dIdent := mkRawIdent `d
+  let fieldOp := mkCIdent ``Deserializer.field
 
   if fields.isEmpty then
-    `($decodeStructBegin $argIdent $structNameStr >>= fun $dIdent =>
-      $decodeStructEnd $dIdent >>= fun $dIdent =>
-      pure ($ctorIdent, $dIdent))
+    `(pure $ctorIdent)
   else
     let fieldIdents : Array Ident := fields.map fun f => mkRawIdent f
     let fieldArgs : TSyntaxArray `term := ⟨fieldIdents.map (⟨·⟩ : Ident → TSyntax `term) |>.toList⟩
 
-    let mut result ← `(pure ($ctorIdent $fieldArgs*, $dIdent))
-
-    result ← `($decodeStructEnd $dIdent >>= fun $dIdent => $result)
+    let mut result ← `(pure ($ctorIdent $fieldArgs*))
 
     for i in [:fields.size] do
       let idx := fields.size - 1 - i
       let fieldIdent := fieldIdents[idx]!
       let fieldNameStr := Syntax.mkStrLit (toString fields[idx]!)
-      result ← `($decodeField $dIdent $fieldNameStr $deserializeFn >>= fun ($fieldIdent, $dIdent) => $result)
-
-    result ← `($decodeStructBegin $argIdent $structNameStr >>= fun $dIdent => $result)
+      result ← `($fieldOp $argIdent $fieldNameStr >>= fun $fieldIdent => $result)
 
     return result
 
@@ -65,59 +54,104 @@ private def mkMatchExpr (discr : Syntax) (alts : Array (Syntax × Syntax)) : Syn
     matchAltsNode
   ]
 
-private def mkCtorDeserializeBody (ctorName : Name) (numFields : Nat) : MetaM (TSyntax `term) := do
+private def mkListPattern (n : Nat) : MetaM (TSyntax `term × Array Ident) := do
+  let fieldIdents : Array Ident := (List.range n).toArray.map fun i =>
+    mkRawIdent (Name.mkSimple s!"__f{i}")
+  let fieldTerms : TSyntaxArray `term := ⟨fieldIdents.map (⟨·⟩ : Ident → TSyntax `term) |>.toList⟩
+  let pat ← `([$fieldTerms,*])
+  return (pat, fieldIdents)
+
+private def mkCtorDeserializeFromList (ctorName : Name) (numFields : Nat) : MetaM (TSyntax `term) := do
   let ctorIdent := mkCIdent ctorName
-  let decodeField := mkCIdent ``Deserializer.decodeField
-  let decodeEnumEnd := mkCIdent ``Deserializer.decodeEnumEnd
   let deserializeFn := mkCIdent ``Deserialize.deserialize
-  let dIdent := mkRawIdent `d
+  let listIdent := mkRawIdent `__list
 
   if numFields == 0 then
-    `($decodeEnumEnd $dIdent >>= fun $dIdent => pure ($ctorIdent, $dIdent))
+    `(.ok $ctorIdent)
   else
-    let fieldIdents : Array Ident := (List.range numFields).toArray.map fun i =>
-      mkRawIdent (Name.mkSimple s!"__field{i}")
-    let fieldArgs : TSyntaxArray `term := ⟨fieldIdents.map (⟨·⟩ : Ident → TSyntax `term) |>.toList⟩
+    let (listPat, fieldIdents) ← mkListPattern numFields
+    let deserializedIdents : Array Ident := fieldIdents.map fun id =>
+      mkRawIdent (Name.mkSimple s!"{id.getId}_d")
+    let deserializedArgs : TSyntaxArray `term := ⟨deserializedIdents.map (⟨·⟩ : Ident → TSyntax `term) |>.toList⟩
 
-    let mut result ← `(pure ($ctorIdent $fieldArgs*, $dIdent))
-
-    result ← `($decodeEnumEnd $dIdent >>= fun $dIdent => $result)
+    let mut result ← `(.ok ($ctorIdent $deserializedArgs*))
 
     for i in [:numFields] do
       let idx := numFields - 1 - i
       let fieldIdent := fieldIdents[idx]!
-      let fieldNameStr := Syntax.mkStrLit s!"_{idx}"
-      result ← `($decodeField $dIdent $fieldNameStr $deserializeFn >>= fun ($fieldIdent, $dIdent) => $result)
+      let deserializedIdent := deserializedIdents[idx]!
+      result ← `($deserializeFn $fieldIdent >>= fun $deserializedIdent => $result)
 
-    return result
+    let alts : Array (Syntax × Syntax) := #[
+      (listPat.raw, result.raw),
+      ((← `(_)).raw, (← `(.error s!"Expected list with {$(Syntax.mkNumLit (toString numFields))} elements")).raw)
+    ]
+    return ⟨mkMatchExpr listIdent alts⟩
+
+private def mkCtorDeserializeBody (ctorName : Name) (numFields : Nat) (dataIdent : Ident) : MetaM (TSyntax `term) := do
+  let ctorIdent := mkCIdent ctorName
+  let deserializeFn := mkCIdent ``Deserialize.deserialize
+
+  if numFields == 0 then
+    `(.ok $ctorIdent)
+  else if numFields == 1 then
+    let fieldIdent := mkRawIdent (Name.mkSimple "__field0")
+    `($deserializeFn $dataIdent >>= fun $fieldIdent => .ok ($ctorIdent $fieldIdent))
+  else
+    let listIdent := mkRawIdent `__list
+    let listBody ← mkCtorDeserializeFromList ctorName numFields
+    let alts : Array (Syntax × Syntax) := #[
+      ((← `(.list $listIdent)).raw, listBody.raw),
+      ((← `(_)).raw, (← `(.error "Expected a list for enum variant with multiple fields")).raw)
+    ]
+    return ⟨mkMatchExpr dataIdent alts⟩
 
 private def mkEnumDeserializeBody (view : InductiveVal) (argName : Name) : MetaM (TSyntax `term) := do
   let argIdent := mkRawIdent argName
-  let decodeEnumBegin := mkCIdent ``Deserializer.decodeEnumBegin
-  let variantIdent := mkRawIdent `variantName
-  let dIdent := mkRawIdent `d
+  let tagIdent := mkRawIdent `__tag
+  let dataIdent := mkRawIdent `__data
 
-  let mut alts : Array (Syntax × Syntax) := #[]
+  let mut dataAlts : Array (Syntax × Syntax) := #[]
+  let mut tagOnlyAlts : Array (Syntax × Syntax) := #[]
 
   for ctorName in view.ctors do
     let ctorInfo ← getConstInfoCtor ctorName
     let shortName := ctorName.getString!
+    let ctorIdent := mkCIdent ctorName
+    let tagStr := Syntax.mkStrLit shortName
 
     let numFields ← forallTelescopeReducing ctorInfo.type fun params _ => do
       let fieldParams := params[view.numParams:]
       return fieldParams.size
 
-    let pat := Syntax.mkStrLit shortName
-    let body ← mkCtorDeserializeBody ctorName numFields
-    alts := alts.push (pat, body.raw)
+    if numFields == 0 then
+      let body ← `(.ok $ctorIdent)
+      tagOnlyAlts := tagOnlyAlts.push (tagStr, body.raw)
+    else
+      let body ← mkCtorDeserializeBody ctorName numFields dataIdent
+      dataAlts := dataAlts.push (tagStr, body.raw)
 
+  let defaultBody ← `(.error s!"Unknown variant: {$tagIdent}")
   let wildPat ← `(_)
-  let wildBody ← `(throw "unknown variant")
-  alts := alts.push (wildPat.raw, wildBody.raw)
+  tagOnlyAlts := tagOnlyAlts.push (wildPat.raw, defaultBody.raw)
+  dataAlts := dataAlts.push (wildPat.raw, defaultBody.raw)
 
-  let matchExpr : TSyntax `term := ⟨mkMatchExpr variantIdent alts⟩
+  let tagOnlyMatch : TSyntax `term := ⟨mkMatchExpr tagIdent tagOnlyAlts⟩
+  let dataMatch : TSyntax `term := ⟨mkMatchExpr tagIdent dataAlts⟩
 
-  `($decodeEnumBegin $argIdent >>= fun ($variantIdent, $dIdent) => $matchExpr)
+  let pairIdent := mkRawIdent `__pair
+  let innerMatchAlts : Array (Syntax × Syntax) := #[
+    ((← `((.str $tagIdent, $dataIdent))).raw, dataMatch.raw),
+    ((← `(_)).raw, (← `(.error "Expected string key in enum map")).raw)
+  ]
+  let innerMatch : TSyntax `term := ⟨mkMatchExpr pairIdent innerMatchAlts⟩
+
+  let outerAlts : Array (Syntax × Syntax) := #[
+    ((← `(.str $tagIdent)).raw, tagOnlyMatch.raw),
+    ((← `(.map [$pairIdent])).raw, innerMatch.raw),
+    ((← `(_)).raw, (← `(.error "Expected a string or single-entry map for enum deserialization")).raw)
+  ]
+  return ⟨mkMatchExpr argIdent outerAlts⟩
 
 def mkDeserializeHandler (declNames : Array Name) : CommandElabM Bool := do
   if declNames.size != 1 then

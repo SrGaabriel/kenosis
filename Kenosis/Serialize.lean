@@ -2,7 +2,7 @@ import Kenosis.Value
 
 namespace Kenosis
 
-class Serialize (α : Type u) where
+class Serialize (α : Type) where
   serialize : α → KenosisValue
 
 instance : Serialize Nat where

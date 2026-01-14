@@ -1,37 +1,54 @@
+import Kenosis.Value
+import Kenosis.Parser
+
 namespace Kenosis
 
-class Deserializer (D : Type) where
-  decodeNat : D → Except String (Nat × D)
-  decodeInt : D → Except String (Int × D)
-  decodeString : D → Except String (String × D)
-  decodeBool : D → Except String (Bool × D)
-  decodeOption : {α : Type} → (D → Except String (α × D)) → D → Except String (Option α × D)
-  decodeList : {α : Type} → (D → Except String (α × D)) → D → Except String (List α × D)
-  decodeStructBegin : D → String → Except String D
-  decodeField : {α : Type} → D → String → (D → Except String (α × D)) → Except String (α × D)
-  decodeStructEnd : D → Except String D
-  decodeEnumBegin : D → Except String (String × D)
-  decodeEnumEnd : D → Except String D
+class Deserialize (α : Type) where
+  deserialize : KenosisValue -> Except String α
 
-class Deserialize (α : Type u) where
-  deserialize : {D : Type} → [Deserializer D] → D → Except String (α × D)
+def Deserializer.field {a : Type} (value : KenosisValue) (name : String) [d : Deserialize a] : ParserM a :=
+  match value with
+  | .map objs =>
+    match objs.find? (fun (k,_) => conforms name k) with
+    | some (_,v) =>
+      match d.deserialize v with
+      | .ok res => .ok res
+      | .error err => .error s!"Failed to deserialize field '{name}': {err}"
+    | none => .error s!"Field '{name}' not found in object."
+  | _ => .error s!"Expected an object to extract field '{name}', but got: {value}"
+
+infix:65 " <.> " => Deserializer.field
 
 instance : Deserialize Nat where
-  deserialize {D} [Deserializer D] d := Deserializer.decodeNat d
+  deserialize
+    | .nat n => .ok n
+    | .int i => if i >= 0 then .ok i.toNat else .error "Expected non-negative integer for Nat"
+    | _ => .error "Expected a natural number"
 
 instance : Deserialize Int where
-  deserialize {D} [Deserializer D] d := Deserializer.decodeInt d
+  deserialize
+    | .int i => .ok i
+    | .nat n => .ok n
+    | _ => .error "Expected an integer"
 
 instance : Deserialize String where
-  deserialize {D} [Deserializer D] d := Deserializer.decodeString d
+  deserialize
+    | .str s => .ok s
+    | _ => .error "Expected a string"
 
 instance : Deserialize Bool where
-  deserialize {D} [Deserializer D] d := Deserializer.decodeBool d
+  deserialize
+    | .bool b => .ok b
+    | _ => .error "Expected a boolean"
 
 instance [Deserialize α] : Deserialize (Option α) where
-  deserialize {D} [Deserializer D] d := Deserializer.decodeOption Deserialize.deserialize d
+  deserialize
+    | .null => .ok none
+    | v => Deserialize.deserialize v >>= fun a => .ok (some a)
 
 instance [Deserialize α] : Deserialize (List α) where
-  deserialize {D} [Deserializer D] d := Deserializer.decodeList Deserialize.deserialize d
+  deserialize
+    | .list xs => xs.mapM Deserialize.deserialize
+    | _ => .error "Expected a list"
 
 end Kenosis
