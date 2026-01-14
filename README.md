@@ -8,10 +8,11 @@ Kenosis is a simple and lightweight serialization/deserialization library for Le
 [x] Generic and extensible
 [x] Derived instances for user-defined types
 [x] Basic JSON support
+[x] Monadic deserializing
 [ ] Binary serialization
 [ ] More flexible serialization (serial names, skipping fields, etc.)
 [ ] Configurable rendering
-[ ] Visitor-based serialization (Maybe?)
+[ ] Visitor-based serialization (Maybe? )
 
 # ✨ Etymology
 

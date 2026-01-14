@@ -31,20 +31,20 @@ instance [Serialize α] [Serialize ε] : Serialize (Result α ε) where
 
 instance [Deserialize α] [Deserialize ε] : Deserialize (Result α ε) where
   deserialize v := match v with
-    | .map [(.str "ok", data)] => Deserialize.deserialize data >>= fun a => .ok (.ok a)
-    | .map [(.str "err", data)] => Deserialize.deserialize data >>= fun e => .ok (.err e)
-    | _ => .error "Expected a Result (ok or err)"
+    | .map [(.str "ok", data)] => Deserialize.deserialize data >>= fun a => pure (.ok a)
+    | .map [(.str "err", data)] => Deserialize.deserialize data >>= fun e => pure (.err e)
+    | _ => DeserializeM.expectedType "a Result (ok or err)"
 
 def roundtrip (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Unit := do
   let serialized := Serialize.serialize x
-  match Deserialize.deserialize serialized with
+  match DeserializeM.run (Deserialize.deserialize serialized) with
   | .ok y =>
     if x == y then
       IO.println s!"  Roundtrip OK: {repr x}"
     else
       IO.println s!"  Roundtrip MISMATCH: {repr x} -> {repr y}"
   | .error e =>
-    IO.println s!"  Roundtrip FAILED: {e}"
+    IO.println s!"  Roundtrip FAILED: {repr e}"
 
 def main : IO Unit := do
   let person := Person.mk "Alice" 30

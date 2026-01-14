@@ -1,54 +1,69 @@
 import Kenosis.Value
-import Kenosis.Parser
+import Kenosis.Traverser
 
 namespace Kenosis
 
-class Deserialize (α : Type) where
-  deserialize : Kenosis.Value -> Except String α
+abbrev DeserializeM := TraverserM
+abbrev DError := TraversingError
 
-def Deserializer.field {a : Type} (value : Kenosis.Value) (name : String) [d : Deserialize a] : ParserM a :=
+abbrev DeserializeM.expectedType (expected : String) : DeserializeM a := TraverserM.expectedType expected
+abbrev DeserializeM.expectedNat : DeserializeM a := TraverserM.expectedNat
+abbrev DeserializeM.expectedInt : DeserializeM a := TraverserM.expectedInt
+abbrev DeserializeM.expectedStr : DeserializeM a := TraverserM.expectedStr
+abbrev DeserializeM.expectedBool : DeserializeM a := TraverserM.expectedBool
+abbrev DeserializeM.expectedList : DeserializeM a := TraverserM.expectedList
+abbrev DeserializeM.unknownVariant (tag : String) : DeserializeM a := TraverserM.unknownVariant tag
+
+def DeserializeM.run (m : DeserializeM α) : Except DError α :=
+  (m { scope := "root", field := none })
+
+class Deserialize (α : Type) where
+  deserialize : Kenosis.Value -> DeserializeM α
+
+def Deserializer.field {a : Type} (value : Kenosis.Value) (name : String) [d : Deserialize a] : DeserializeM a :=
   match value with
   | .map objs =>
     match objs.find? (fun (k,_) => conforms name k) with
-    | some (_,v) =>
-      match d.deserialize v with
-      | .ok res => .ok res
-      | .error err => .error s!"Failed to deserialize field '{name}': {err}"
-    | none => .error s!"Field '{name}' not found in object."
-  | _ => .error s!"Expected an object to extract field '{name}', but got: {value}"
+    | some (_,v) => withReader (fun ctx => {ctx with scope := name}) (d.deserialize v)
+    | none => do
+      let ctx ← read
+      throw $ .missingField name ctx.scope
+  | _ => do
+    let ctx ← read
+    throw $ .notExtractable name ctx.scope
 
 infix:65 " <.> " => Deserializer.field
 
 instance : Deserialize Nat where
   deserialize
-    | .nat n => .ok n
-    | .int i => if i >= 0 then .ok i.toNat else .error "Expected non-negative integer for Nat"
-    | _ => .error "Expected a natural number"
+    | .nat n => pure n
+    | .int i => if i >= 0 then pure i.toNat else DeserializeM.expectedNat
+    | _ => DeserializeM.expectedNat
 
 instance : Deserialize Int where
   deserialize
-    | .int i => .ok i
-    | .nat n => .ok n
-    | _ => .error "Expected an integer"
+    | .int i => pure i
+    | .nat n => pure n
+    | _ => DeserializeM.expectedInt
 
 instance : Deserialize String where
   deserialize
-    | .str s => .ok s
-    | _ => .error "Expected a string"
+    | .str s => pure s
+    | _ => DeserializeM.expectedStr
 
 instance : Deserialize Bool where
   deserialize
-    | .bool b => .ok b
-    | _ => .error "Expected a boolean"
+    | .bool b => pure b
+    | _ => DeserializeM.expectedBool
 
 instance [Deserialize α] : Deserialize (Option α) where
   deserialize
-    | .null => .ok none
-    | v => Deserialize.deserialize v >>= fun a => .ok (some a)
+    | .null => pure none
+    | v => Deserialize.deserialize v >>= fun a => pure (some a)
 
 instance [Deserialize α] : Deserialize (List α) where
   deserialize
     | .list xs => xs.mapM Deserialize.deserialize
-    | _ => .error "Expected a list"
+    | _ => DeserializeM.expectedList
 
 end Kenosis

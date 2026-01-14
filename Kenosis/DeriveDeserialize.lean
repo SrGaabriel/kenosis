@@ -65,16 +65,17 @@ private def mkCtorDeserializeFromList (ctorName : Name) (numFields : Nat) : Meta
   let ctorIdent := mkCIdent ctorName
   let deserializeFn := mkCIdent ``Deserialize.deserialize
   let listIdent := mkRawIdent `__list
+  let expectedTypeFn := mkCIdent ``DeserializeM.expectedType
 
   if numFields == 0 then
-    `(.ok $ctorIdent)
+    `(pure $ctorIdent)
   else
     let (listPat, fieldIdents) ← mkListPattern numFields
     let deserializedIdents : Array Ident := fieldIdents.map fun id =>
       mkRawIdent (Name.mkSimple s!"{id.getId}_d")
     let deserializedArgs : TSyntaxArray `term := ⟨deserializedIdents.map (⟨·⟩ : Ident → TSyntax `term) |>.toList⟩
 
-    let mut result ← `(.ok ($ctorIdent $deserializedArgs*))
+    let mut result ← `(pure ($ctorIdent $deserializedArgs*))
 
     for i in [:numFields] do
       let idx := numFields - 1 - i
@@ -82,27 +83,29 @@ private def mkCtorDeserializeFromList (ctorName : Name) (numFields : Nat) : Meta
       let deserializedIdent := deserializedIdents[idx]!
       result ← `($deserializeFn $fieldIdent >>= fun $deserializedIdent => $result)
 
+    let expectedMsg := s!"a list with {numFields} elements"
     let alts : Array (Syntax × Syntax) := #[
       (listPat.raw, result.raw),
-      ((← `(_)).raw, (← `(.error s!"Expected list with {$(Syntax.mkNumLit (toString numFields))} elements")).raw)
+      ((← `(_)).raw, (← `($expectedTypeFn $(Syntax.mkStrLit expectedMsg))).raw)
     ]
     return ⟨mkMatchExpr listIdent alts⟩
 
 private def mkCtorDeserializeBody (ctorName : Name) (numFields : Nat) (dataIdent : Ident) : MetaM (TSyntax `term) := do
   let ctorIdent := mkCIdent ctorName
   let deserializeFn := mkCIdent ``Deserialize.deserialize
+  let expectedTypeFn := mkCIdent ``DeserializeM.expectedType
 
   if numFields == 0 then
-    `(.ok $ctorIdent)
+    `(pure $ctorIdent)
   else if numFields == 1 then
     let fieldIdent := mkRawIdent (Name.mkSimple "__field0")
-    `($deserializeFn $dataIdent >>= fun $fieldIdent => .ok ($ctorIdent $fieldIdent))
+    `($deserializeFn $dataIdent >>= fun $fieldIdent => pure ($ctorIdent $fieldIdent))
   else
     let listIdent := mkRawIdent `__list
     let listBody ← mkCtorDeserializeFromList ctorName numFields
     let alts : Array (Syntax × Syntax) := #[
       ((← `(.list $listIdent)).raw, listBody.raw),
-      ((← `(_)).raw, (← `(.error "Expected a list for enum variant with multiple fields")).raw)
+      ((← `(_)).raw, (← `($expectedTypeFn "a list for enum variant with multiple fields")).raw)
     ]
     return ⟨mkMatchExpr dataIdent alts⟩
 
@@ -110,6 +113,8 @@ private def mkEnumDeserializeBody (view : InductiveVal) (argName : Name) : MetaM
   let argIdent := mkRawIdent argName
   let tagIdent := mkRawIdent `__tag
   let dataIdent := mkRawIdent `__data
+  let unknownVariantFn := mkCIdent ``DeserializeM.unknownVariant
+  let expectedTypeFn := mkCIdent ``DeserializeM.expectedType
 
   let mut dataAlts : Array (Syntax × Syntax) := #[]
   let mut tagOnlyAlts : Array (Syntax × Syntax) := #[]
@@ -125,13 +130,14 @@ private def mkEnumDeserializeBody (view : InductiveVal) (argName : Name) : MetaM
       return fieldParams.size
 
     if numFields == 0 then
-      let body ← `(.ok $ctorIdent)
+      let body ← `(pure $ctorIdent)
       tagOnlyAlts := tagOnlyAlts.push (tagStr, body.raw)
     else
       let body ← mkCtorDeserializeBody ctorName numFields dataIdent
-      dataAlts := dataAlts.push (tagStr, body.raw)
+      let wrappedBody ← `(withReader (fun ctx => {ctx with scope := $tagStr}) $body)
+      dataAlts := dataAlts.push (tagStr, wrappedBody.raw)
 
-  let defaultBody ← `(.error s!"Unknown variant: {$tagIdent}")
+  let defaultBody ← `($unknownVariantFn $tagIdent)
   let wildPat ← `(_)
   tagOnlyAlts := tagOnlyAlts.push (wildPat.raw, defaultBody.raw)
   dataAlts := dataAlts.push (wildPat.raw, defaultBody.raw)
@@ -142,14 +148,14 @@ private def mkEnumDeserializeBody (view : InductiveVal) (argName : Name) : MetaM
   let pairIdent := mkRawIdent `__pair
   let innerMatchAlts : Array (Syntax × Syntax) := #[
     ((← `((.str $tagIdent, $dataIdent))).raw, dataMatch.raw),
-    ((← `(_)).raw, (← `(.error "Expected string key in enum map")).raw)
+    ((← `(_)).raw, (← `($expectedTypeFn "a string key in enum map")).raw)
   ]
   let innerMatch : TSyntax `term := ⟨mkMatchExpr pairIdent innerMatchAlts⟩
 
   let outerAlts : Array (Syntax × Syntax) := #[
     ((← `(.str $tagIdent)).raw, tagOnlyMatch.raw),
     ((← `(.map [$pairIdent])).raw, innerMatch.raw),
-    ((← `(_)).raw, (← `(.error "Expected a string or single-entry map for enum deserialization")).raw)
+    ((← `(_)).raw, (← `($expectedTypeFn "a string or single-entry map for enum")).raw)
   ]
   return ⟨mkMatchExpr argIdent outerAlts⟩
 
@@ -167,11 +173,12 @@ def mkDeserializeHandler (declNames : Array Name) : CommandElabM Bool := do
   let argName := Name.mkSimple "__deserialArg"
 
   let deserializeBody ← liftTermElabM do
-    if isStruct then
+    let body ← if isStruct then
       let fields ← getStructureFieldNames declName
       mkStructDeserializeBody declName fields argName
     else
       mkEnumDeserializeBody view argName
+    `(withReader (fun ctx => {ctx with scope := "root"}) $body)
 
   let typeIdent := mkCIdent declName
   let deserializeClass := mkCIdent ``Deserialize
