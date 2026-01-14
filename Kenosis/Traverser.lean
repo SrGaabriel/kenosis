@@ -11,7 +11,22 @@ inductive TraversingError where
   | unknownVariant (tag : String) (scope : String)
   deriving Repr
 
+instance : ToString TraversingError where
+  toString
+    | .missingField name scope => s!"Missing field '{name}' in '{scope}'"
+    | .notExtractable field scope => s!"Field '{field}' is not extractable in '{scope}'"
+    | .expectedType expected field => s!"Expected {expected} for field '{field}'"
+    | .unknownVariant tag scope => s!"Unknown variant '{tag}' in '{scope}'"
+
 abbrev TraverserM := ExceptT TraversingError (ReaderM TraversingContext)
+
+def TraverserM.missingField (name : String) : TraverserM a := do
+  let ctx <- read
+  throw $ TraversingError.missingField name ctx.scope
+
+def TraverserM.notExtractable (field : String) : TraverserM a := do
+  let ctx <- read
+  throw $ TraversingError.missingField field ctx.scope
 
 def TraverserM.expectedType (expected : String) : TraverserM a := do
   let ctx ← read

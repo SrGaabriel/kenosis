@@ -1,14 +1,20 @@
+import Std.Data.HashMap
+
 namespace Kenosis
 
+open Std
+
 inductive Value where
-  | bool : Bool → Kenosis.Value
-  | int : Int → Kenosis.Value
-  | nat : Nat → Kenosis.Value
-  | long : Int64 → Kenosis.Value
-  | str : String → Kenosis.Value
-  | list : List Kenosis.Value → Kenosis.Value
-  | null : Kenosis.Value
-  | map : List (Kenosis.Value × Kenosis.Value) → Kenosis.Value
+  | bool (b : Bool)
+  | int (num : Int)
+  | nat (n : Nat)
+  | long (num : Int64)
+  | str (string : String)
+  | list (arr : List Value)
+  | null
+  | obj (kv : HashMap.Raw String Value)
+
+abbrev emptyObj : HashMap.Raw String Value := {}
 
 def conforms (key : String) (value : Kenosis.Value) : Bool :=
   match value with
@@ -23,8 +29,8 @@ partial def toStringImpl : Kenosis.Value → String
   | Kenosis.Value.str s => s
   | Kenosis.Value.list lst => "[" ++ String.intercalate ", " (lst.map toStringImpl) ++ "]"
   | Kenosis.Value.null => "null"
-  | Kenosis.Value.map m =>
-    let entries := m.map (fun (k, v) => toStringImpl k ++ ": " ++ toStringImpl v)
+  | Kenosis.Value.obj m =>
+    let entries := m.toList.map (fun (k, v) => k ++ ": " ++ toStringImpl v)
     "{" ++ String.intercalate ", " entries ++ "}"
 
 instance : ToString Kenosis.Value where

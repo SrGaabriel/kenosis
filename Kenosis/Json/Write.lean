@@ -1,36 +1,27 @@
 import Kenosis.Value
 import Kenosis.Utils
-import Kenosis.Serialize
+import Std.Data.HashMap.Raw
 
 namespace Kenosis.Json
 
 set_option linter.unusedVariables false in
 
-def Json.compileValue (v : Kenosis.Value) : Except String String :=
+partial def Json.compileValue (v : Kenosis.Value) : String :=
   match v with
-  | .bool b => .ok (if b then "true" else "false")
-  | .int i => .ok (toString i)
-  | .nat n => .ok (toString n)
-  | .long n => .ok (toString n)
-  | .str s => .ok ("\"" ++ escapeString s ++ "\"")
-  | .null => .ok "null"
-  | .list xs => do
-      let inner ← xs.attach.mapM fun ⟨x, h⟩ => compileValue x
-      .ok ("[" ++ ", ".intercalate inner ++ "]")
-  | .map kvs => do
-      let pairs ← kvs.attach.mapM fun ⟨(k, v), h⟩ => do
-        let key ← match k with
-          | .str s => pure s
-          | _ => .error "JSON object keys must be strings"
-        let val ← compileValue v
-        pure ("\"" ++ key ++ "\": " ++ val)
-      .ok ("{" ++ ", ".intercalate pairs ++ "}")
-termination_by sizeOf v
-decreasing_by
-  all_goals simp_wf
-  · have := List.sizeOf_lt_of_mem h; omega
-  · have h1 := List.sizeOf_lt_of_mem h
-    have h2 : sizeOf (k, v) = 1 + sizeOf k + sizeOf v := rfl
-    omega
+  | .bool b => (if b then "true" else "false")
+  | .int i => (toString i)
+  | .nat n => (toString n)
+  | .long n => (toString n)
+  | .str s => ("\"" ++ escapeString s ++ "\"")
+  | .null => "null"
+  | .list xs => 
+      let inner := xs.attach.map fun ⟨x, h⟩ => compileValue x
+      ("[" ++ ", ".intercalate inner ++ "]")
+  | .obj kvs =>
+      let lst := kvs.toList
+      let pairs := lst.map fun (k,v) =>
+        let val := compileValue v
+        ("\"" ++ k ++ "\": " ++ val)
+      ("{" ++ ", ".intercalate pairs ++ "}")
 
 end Kenosis.Json

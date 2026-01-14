@@ -22,15 +22,11 @@ class Deserialize (α : Type) where
 
 def Deserializer.field {a : Type} (value : Kenosis.Value) (name : String) [d : Deserialize a] : DeserializeM a :=
   match value with
-  | .map objs =>
-    match objs.find? (fun (k,_) => conforms name k) with
-    | some (_,v) => withReader (fun ctx => {ctx with scope := name}) (d.deserialize v)
-    | none => do
-      let ctx ← read
-      throw $ .missingField name ctx.scope
-  | _ => do
-    let ctx ← read
-    throw $ .notExtractable name ctx.scope
+  | .obj objs =>
+    match objs.get? name with
+    | some v => withReader (fun ctx => {ctx with scope := name}) (d.deserialize v)
+    | none => TraverserM.missingField name
+  | _ => TraverserM.notExtractable name
 
 infix:65 " <.> " => Deserializer.field
 

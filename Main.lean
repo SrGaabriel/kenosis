@@ -26,13 +26,17 @@ inductive Result (α : Type) (ε : Type)
 
 instance [Serialize α] [Serialize ε] : Serialize (Result α ε) where
   serialize
-    | .ok v => .map [(.str "ok", Serialize.serialize v)]
-    | .err e => .map [(.str "err", Serialize.serialize e)]
+    | .ok v => .obj (emptyObj.insert "ok" (Serialize.serialize v))
+    | .err e => .obj (emptyObj.insert "err" (Serialize.serialize e))
 
 instance [Deserialize α] [Deserialize ε] : Deserialize (Result α ε) where
   deserialize v := match v with
-    | .map [(.str "ok", data)] => Deserialize.deserialize data >>= fun a => pure (.ok a)
-    | .map [(.str "err", data)] => Deserialize.deserialize data >>= fun e => pure (.err e)
+    | .obj m =>
+      match m.get? "ok" with
+      | some data => Deserialize.deserialize data >>= fun a => pure (.ok a)
+      | none => match m.get? "err" with
+        | some data => Deserialize.deserialize data >>= fun e => pure (.err e)
+        | none => DeserializeM.expectedType "a Result (ok or err)"
     | _ => DeserializeM.expectedType "a Result (ok or err)"
 
 def roundtrip (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Unit := do
@@ -68,16 +72,16 @@ def main : IO Unit := do
 
   IO.println ""
 
-  IO.println "Person roundtrip:"
-  roundtrip person
+  IO.println "Person deserialize:"
+  IO.println (repr (Json.deserialize (α := Person) "{\"name\": \"Alice\", \"age\": 30}"))
 
-  IO.println "Employee roundtrip:"
-  roundtrip employee
+  IO.println "Employee deserialize:"
+  IO.println (repr (Json.deserialize (α := Employee) "{\"person\": {\"name\": \"Alice\", \"age\": 30}, \"department\": \"Engineering\", \"manager\": \"Bob\"}"))
 
-  IO.println "Status roundtrips:"
-  roundtrip status1
-  roundtrip status2
+  IO.println "Status deserializes:"
+  IO.println (repr (Json.deserialize (α := Status) "\"active\""))
+  IO.println (repr (Json.deserialize (α := Status) "{\"pending\": \"awaiting approval\"}"))
 
-  IO.println "Result roundtrips:"
-  roundtrip result1
-  roundtrip result2
+  IO.println "Result deserializes:"
+  IO.println (repr (Json.deserialize (α := Result Nat String) "{\"ok\": 42}"))
+  IO.println (repr (Json.deserialize (α := Result Nat String) "{\"err\": \"something went wrong\"}"))

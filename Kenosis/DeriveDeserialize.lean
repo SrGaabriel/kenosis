@@ -145,16 +145,20 @@ private def mkEnumDeserializeBody (view : InductiveVal) (argName : Name) : MetaM
   let tagOnlyMatch : TSyntax `term := ⟨mkMatchExpr tagIdent tagOnlyAlts⟩
   let dataMatch : TSyntax `term := ⟨mkMatchExpr tagIdent dataAlts⟩
 
-  let pairIdent := mkRawIdent `__pair
+  let mapIdent := mkRawIdent `__map
+  let pairListIdent := mkRawIdent `__pairList
+
   let innerMatchAlts : Array (Syntax × Syntax) := #[
-    ((← `((.str $tagIdent, $dataIdent))).raw, dataMatch.raw),
-    ((← `(_)).raw, (← `($expectedTypeFn "a string key in enum map")).raw)
+    ((← `([($tagIdent, $dataIdent)])).raw, dataMatch.raw),
+    ((← `(_)).raw, (← `($expectedTypeFn "a single-entry map for enum")).raw)
   ]
-  let innerMatch : TSyntax `term := ⟨mkMatchExpr pairIdent innerMatchAlts⟩
+  let innerMatch : TSyntax `term := ⟨mkMatchExpr pairListIdent innerMatchAlts⟩
+
+  let objBody ← `(let $pairListIdent := ($mapIdent).toList; $innerMatch)
 
   let outerAlts : Array (Syntax × Syntax) := #[
     ((← `(.str $tagIdent)).raw, tagOnlyMatch.raw),
-    ((← `(.map [$pairIdent])).raw, innerMatch.raw),
+    ((← `(.obj $mapIdent)).raw, objBody.raw),
     ((← `(_)).raw, (← `($expectedTypeFn "a string or single-entry map for enum")).raw)
   ]
   return ⟨mkMatchExpr argIdent outerAlts⟩
