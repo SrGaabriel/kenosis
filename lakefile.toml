@@ -1,0 +1,10 @@
+name = "kenosis"
+version = "0.1.0"
+defaultTargets = ["kenosis"]
+
+[[lean_lib]]
+name = "Kenosis"
+
+[[lean_exe]]
+name = "kenosis"
+root = "Main"
