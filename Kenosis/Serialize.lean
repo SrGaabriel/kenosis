@@ -1,29 +1,28 @@
+import Kenosis.Value
+
 namespace Kenosis
 
 class Serialize (α : Type u) where
-  serialize : α → String
+  serialize : α → KenosisValue
 
 instance : Serialize Nat where
-  serialize n := toString n
+  serialize n := .nat n
 
 instance : Serialize Int where
-  serialize n := toString n
+  serialize n := .int n
 
 instance : Serialize String where
-  serialize s := "\"" ++ s ++ "\""
+  serialize s := .str s
 
 instance : Serialize Bool where
-  serialize b := if b then "true" else "false"
+  serialize b := .bool b
 
 instance [Serialize α] : Serialize (Option α) where
   serialize
-    | none => "null"
+    | none => .null
     | some a => Serialize.serialize a
 
 instance [Serialize α] : Serialize (List α) where
-  serialize xs := "[" ++ String.intercalate ", " (xs.map Serialize.serialize) ++ "]"
-
-instance [Serialize α] [Serialize β] : Serialize (Prod α β) where
-  serialize p := "(" ++ Serialize.serialize p.fst ++ ", " ++ Serialize.serialize p.snd ++ ")"
+  serialize xs := .list (xs.map Serialize.serialize)
 
 end Kenosis

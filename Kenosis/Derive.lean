@@ -20,22 +20,60 @@ private def getStructureFields (structName : Name) : MetaM (Array (Name × Name)
 
 private def mkStructSerializeBody (_structName : Name) (fields : Array (Name × Name)) (argName : Name) : MetaM (TSyntax `term) := do
   if fields.isEmpty then
-    `("{}")
+    `(KenosisValue.map [])
   else
     let argIdent := mkRawIdent argName
     let serializeFn := mkCIdent ``Serialize.serialize
-    let mut result : TSyntax `term ← `("{")
-    for h : i in [:fields.size] do
-      let (fieldName, projName) := fields[i]
+    let mut fieldExprs : Array (TSyntax `term) := #[]
+    for (fieldName, projName) in fields do
       let fieldStr := toString fieldName
       let projIdent := mkCIdent projName
-      let prefixStr := if i == 0 then s!"\"{fieldStr}\": " else s!", \"{fieldStr}\": "
       let fieldAccess ← `($projIdent $argIdent)
       let serializedField ← `($serializeFn $fieldAccess)
-      let prefixLit := Syntax.mkStrLit prefixStr
-      result ← `($result ++ $prefixLit ++ $serializedField)
-    let closeBrace := Syntax.mkStrLit "}"
-    `($result ++ $closeBrace)
+      let fieldStrLit := Syntax.mkStrLit fieldStr
+      let pair ← `((KenosisValue.str $fieldStrLit, $serializedField))
+      fieldExprs := fieldExprs.push pair
+    let listExpr ← `([$fieldExprs,*])
+    `(KenosisValue.map $listExpr)
+
+private def mkCtorMatchAlt (view : InductiveVal) (ctorName : Name) : MetaM (Syntax × Syntax) := do
+  let ctorInfo ← getConstInfoCtor ctorName
+  let shortName := ctorName.getString!
+  let serializeFn := mkCIdent ``Serialize.serialize
+  let ctorIdent := mkRawQualIdent ctorName
+
+  forallTelescopeReducing ctorInfo.type fun params _ => do
+    let fieldParams := params[view.numParams:]
+    let tagStrLit := Syntax.mkStrLit shortName
+
+    if fieldParams.size == 0 then
+      let pat : TSyntax `term := ⟨ctorIdent⟩
+      let body ← `(KenosisValue.str $tagStrLit)
+      return (pat.raw, body.raw)
+    else if fieldParams.size == 1 then
+      let fieldName := "__field0"
+      let fieldIdent := mkRawIdent (Name.mkSimple fieldName)
+      let patternArgs : TSyntaxArray `term := ⟨[(⟨mkRawIdent (Name.mkSimple fieldName)⟩ : TSyntax `term)]⟩
+      let pat ← `($ctorIdent $patternArgs*)
+      let serializedField ← `($serializeFn $fieldIdent)
+      let body ← `(KenosisValue.map [(KenosisValue.str $tagStrLit, $serializedField)])
+      return (pat.raw, body.raw)
+    else
+      let mut fieldNames : Array String := #[]
+      for i in [:fieldParams.size] do
+        fieldNames := fieldNames.push s!"__field{i}"
+
+      let patternArgs : TSyntaxArray `term := ⟨(fieldNames.map fun n => (⟨mkRawIdent (Name.mkSimple n)⟩ : TSyntax `term)).toList⟩
+      let pat ← `($ctorIdent $patternArgs*)
+
+      let mut fieldExprs : Array (TSyntax `term) := #[]
+      for fieldName in fieldNames do
+        let fieldIdent := mkRawIdent (Name.mkSimple fieldName)
+        let serializedField ← `($serializeFn $fieldIdent)
+        fieldExprs := fieldExprs.push serializedField
+      let listExpr ← `([$fieldExprs,*])
+      let body ← `(KenosisValue.map [(KenosisValue.str $tagStrLit, KenosisValue.list $listExpr)])
+      return (pat.raw, body.raw)
 
 private def mkMatchExpr (discr : Syntax) (alts : Array (Syntax × Syntax)) : Syntax :=
   let matchAlts := alts.map fun (pat, body) =>
@@ -56,40 +94,6 @@ private def mkMatchExpr (discr : Syntax) (alts : Array (Syntax × Syntax)) : Syn
     mkAtom "with",
     matchAltsNode
   ]
-
-private def mkCtorMatchAlt (view : InductiveVal) (ctorName : Name) : MetaM (Syntax × Syntax) := do
-  let ctorInfo ← getConstInfoCtor ctorName
-  let shortName := ctorName.getString!
-  let serializeFn := mkCIdent ``Serialize.serialize
-  let ctorIdent := mkRawQualIdent ctorName
-
-  forallTelescopeReducing ctorInfo.type fun params _ => do
-    let fieldParams := params[view.numParams:]
-
-    if fieldParams.size == 0 then
-      let pat : TSyntax `term := ⟨ctorIdent⟩
-      let body : TSyntax `term := ⟨Syntax.mkStrLit s!"\"{shortName}\""⟩
-      return (pat.raw, body.raw)
-    else
-      let mut fieldNames : Array String := #[]
-      for param in fieldParams do
-        let localDecl ← param.fvarId!.getDecl
-        fieldNames := fieldNames.push s!"__field{fieldNames.size}"
-
-      let patternArgs : TSyntaxArray `term := ⟨(fieldNames.map fun n => (⟨mkRawIdent (Name.mkSimple n)⟩ : TSyntax `term)).toList⟩
-      let pat ← `($ctorIdent $patternArgs*)
-
-      let mut bodyResult : TSyntax `term ← `("{")
-      for h : i in [:fieldNames.size] do
-        let fieldName := fieldNames[i]
-        let fieldIdent := mkRawIdent (Name.mkSimple fieldName)
-        let prefixStr := if i == 0 then s!"\"_{i}\": " else s!", \"_{i}\": "
-        let serializedField ← `($serializeFn $fieldIdent)
-        let prefixLit := Syntax.mkStrLit prefixStr
-        bodyResult ← `($bodyResult ++ $prefixLit ++ $serializedField)
-      let closeBrace := Syntax.mkStrLit "}"
-      let body ← `($bodyResult ++ $closeBrace)
-      return (pat.raw, body.raw)
 
 private def mkEnumSerializeBody (view : InductiveVal) (argName : Name) : MetaM (TSyntax `term) := do
   let argIdent := mkRawIdent argName
