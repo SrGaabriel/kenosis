@@ -1,10 +1,12 @@
 name = "kenosis"
-version = "0.1.0"
+version = "0.2.0"
 defaultTargets = ["kenosis"]
+testDriver = "test"
 
 [[lean_lib]]
 name = "Kenosis"
 
 [[lean_exe]]
-name = "kenosis"
+name = "test"
+srcDir = "Test"
 root = "Main"

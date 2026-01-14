@@ -12,7 +12,7 @@ Kenosis is a simple and lightweight serialization/deserialization library for Le
 [ ] Binary serialization
 [ ] More flexible serialization (serial names, skipping fields, etc.)
 [ ] Configurable rendering
-[ ] Visitor-based serialization (Maybe? )
+[ ] Visitor-based serialization (maybe?)
 
 # ✨ Etymology
 
