@@ -113,6 +113,17 @@ private def mkMatchExpr (discr : Syntax) (alts : Array (Syntax × Syntax)) : Syn
     matchAltsNode
   ]
 
+private def mkIfElseChain (cases : Array (TSyntax `term × TSyntax `term)) (defaultCase : TSyntax `term) : MetaM (TSyntax `term) := do
+  if cases.isEmpty then
+    return defaultCase
+  else
+    let mut result := defaultCase
+    for i in [:cases.size] do
+      let idx := cases.size - 1 - i
+      let (cond, body) := cases[idx]!
+      result ← `(if $cond then $body else $result)
+    return result
+
 private def mkEnumSerializeBody (view : InductiveVal) (argName : Name) (recFnMap : List (Name × Ident) := []) : MetaM (TSyntax `term) := do
   let argIdent := mkRawIdent argName
 
@@ -516,7 +527,7 @@ private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) (recFn
         fieldIdents := fieldIdents.push (mkRawIdent (Name.mkSimple s!"__f{i}"))
       let fieldArgs : TSyntaxArray `term := ⟨fieldIdents.map (⟨·⟩ : Ident → TSyntax `term) |>.toList⟩
 
-      let mut innerResult ← `(pure ($ctorIdent $fieldArgs*))
+      let mut result ← `(pure ($ctorIdent $fieldArgs*))
       for i in [:numFields] do
         let ridx := numFields - 1 - i
         let fieldIdent := fieldIdents[ridx]!
@@ -524,9 +535,10 @@ private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) (recFn
           | some recFnIdent => pure (recFnIdent : TSyntax `term)
           | none => `($deserializeFn)
         let keyStr := Syntax.mkStrLit s!"_{ridx}"
-        innerResult ← `($getFieldFn $keyStr $deser >>= fun $fieldIdent => $innerResult)
+        let callExpr ← `($getFieldFn $keyStr $deser)
+        result ← `(do let $fieldIdent ← ($callExpr); ($result))
 
-      pure innerResult
+      pure result
 
     indexAlts := indexAlts.push (idxLit, body)
 
@@ -541,21 +553,19 @@ private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) (recFn
   let idxIdent := mkRawIdent `__idx
   let nameIdent := mkRawIdent `__name
 
-  let mut indexMatchAlts : Array (Syntax × Syntax) := #[]
-  for (pat, body) in indexAlts do
-    indexMatchAlts := indexMatchAlts.push (pat.raw, body.raw)
+  let mut indexCases : Array (TSyntax `term × TSyntax `term) := #[]
+  for (idxLit, body) in indexAlts do
+    let cond ← `($idxIdent == $idxLit)
+    indexCases := indexCases.push (cond, body)
   let defaultIdx ← `($failFn s!"invalid variant index: {$idxIdent}")
-  let wildPat ← `(_)
-  indexMatchAlts := indexMatchAlts.push (wildPat.raw, defaultIdx.raw)
+  let indexMatch ← mkIfElseChain indexCases defaultIdx
 
-  let mut nameMatchAlts : Array (Syntax × Syntax) := #[]
-  for (pat, body) in nameAlts do
-    nameMatchAlts := nameMatchAlts.push (pat.raw, body.raw)
+  let mut nameCases : Array (TSyntax `term × TSyntax `term) := #[]
+  for (tagStrLit, body) in nameAlts do
+    let cond ← `($nameIdent == $tagStrLit)
+    nameCases := nameCases.push (cond, body)
   let defaultName ← `($failFn s!"unknown variant: {$nameIdent}")
-  nameMatchAlts := nameMatchAlts.push (wildPat.raw, defaultName.raw)
-
-  let indexMatch : TSyntax `term := ⟨mkMatchExpr idxIdent indexMatchAlts⟩
-  let nameMatch : TSyntax `term := ⟨mkMatchExpr nameIdent nameMatchAlts⟩
+  let nameMatch ← mkIfElseChain nameCases defaultName
 
   `($matchVariantFn $numCtors (fun $idxIdent => $indexMatch) (fun $nameIdent => $nameMatch))
 
