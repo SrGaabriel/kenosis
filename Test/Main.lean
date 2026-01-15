@@ -33,10 +33,10 @@ inductive MyResult (α : Type) (ε : Type)
   | err (error : ε)
   deriving Serialize, Deserialize, BEq, Repr
 
--- inductive Tree (α : Type)
---   | leaf
---   | node (value : α) (left : Tree α) (right : Tree α)
---   deriving Serialize, Deserialize, BEq, Repr
+inductive Tree (α : Type)
+  | leaf
+  | node (value : α) (left : Tree α) (right : Tree α)
+  deriving Serialize, Deserialize, BEq, Repr
 
 def testJson (name : String) (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Bool := do
   IO.println s!"  Testing JSON: {name}"
@@ -153,6 +153,12 @@ def main : IO Unit := do
   allPassed := allPassed && (← testBoth "MyResult ok" (MyResult.ok 42 : MyResult Nat String))
   allPassed := allPassed && (← testBoth "MyResult err" (MyResult.err "failed" : MyResult Nat String))
   allPassed := allPassed && (← testBoth "Nested polymorphic" (Box.mk (Pair.mk 1 "x") : Box (Pair Nat String)))
+
+  IO.println "Recursive Types"
+  allPassed := allPassed && (← testBoth "Tree (leaf)" (Tree.leaf : Tree Nat))
+  allPassed := allPassed && (← testBoth "Tree (single node)" (Tree.node 42 Tree.leaf Tree.leaf : Tree Nat))
+  let complexTree := Tree.node 1 (Tree.node 2 Tree.leaf Tree.leaf) (Tree.node 3 (Tree.node 4 Tree.leaf Tree.leaf) Tree.leaf)
+  allPassed := allPassed && (← testBoth "Tree (complex)" complexTree)
 
   if allPassed then
     IO.println "All tests passed!"

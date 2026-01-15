@@ -38,12 +38,12 @@ private def mkStructSerializeBody (_structName : Name) (fields : Array (Name × 
       fieldExprs := fieldExprs.push pair
     `($putObjectFn [$fieldExprs,*])
 
-private def mkCtorSerializeAlt (view : InductiveVal) (ctorIdx : Nat) (ctorName : Name) : MetaM (Syntax × Syntax) := do
+private def mkCtorSerializeAlt (view : InductiveVal) (ctorIdx : Nat) (ctorName : Name) (recFnIdent : Option Ident := none) : MetaM (Syntax × Syntax) := do
   let ctorInfo ← getConstInfoCtor ctorName
   let shortName := ctorName.getString!
   let serializeFn := mkCIdent ``Serialize.serialize
   let putVariantFn := mkCIdent ``Encoder.putVariant
-  let putListFn := mkCIdent ``Encoder.putList
+  let putObjectFn := mkCIdent ``Encoder.putObject
   let ctorIdent := mkRawQualIdent ctorName
   let idxLit := Syntax.mkNumLit (toString ctorIdx)
   let tagStrLit := Syntax.mkStrLit shortName
@@ -60,7 +60,12 @@ private def mkCtorSerializeAlt (view : InductiveVal) (ctorIdx : Nat) (ctorName :
       let fieldIdent := mkRawIdent (Name.mkSimple fieldName)
       let patternArgs : TSyntaxArray `term := ⟨[(⟨fieldIdent⟩ : TSyntax `term)]⟩
       let pat ← `($ctorIdent $patternArgs*)
-      let serializedField ← `($serializeFn $fieldIdent)
+      let paramType ← inferType fieldParams[0]!
+      let useRecFn := recFnIdent.isSome && paramType.isAppOf view.name
+      let serializedField ← if useRecFn then
+        `($(recFnIdent.get!) $fieldIdent)
+      else
+        `($serializeFn $fieldIdent)
       let body ← `($putVariantFn $idxLit $tagStrLit (some $serializedField))
       return (pat.raw, body.raw)
     else
@@ -71,14 +76,22 @@ private def mkCtorSerializeAlt (view : InductiveVal) (ctorIdx : Nat) (ctorName :
       let patternArgs : TSyntaxArray `term := ⟨(fieldNames.map fun n => (⟨mkRawIdent (Name.mkSimple n)⟩ : TSyntax `term)).toList⟩
       let pat ← `($ctorIdent $patternArgs*)
 
-      let mut fieldExprs : Array (TSyntax `term) := #[]
-      for fieldName in fieldNames do
+      let mut fieldPairs : Array (TSyntax `term) := #[]
+      for i in [:fieldParams.size] do
+        let fieldName := fieldNames[i]!
         let fieldIdent := mkRawIdent (Name.mkSimple fieldName)
-        let serializedField ← `($serializeFn $fieldIdent)
-        fieldExprs := fieldExprs.push serializedField
+        let paramType ← inferType fieldParams[i]!
+        let useRecFn := recFnIdent.isSome && paramType.isAppOf view.name
+        let serializedField ← if useRecFn then
+          `($(recFnIdent.get!) $fieldIdent)
+        else
+          `($serializeFn $fieldIdent)
+        let keyStr := Syntax.mkStrLit s!"_{i}"
+        let pair ← `(($keyStr, $serializedField))
+        fieldPairs := fieldPairs.push pair
 
-      let listExpr ← `($putListFn [$fieldExprs,*])
-      let body ← `($putVariantFn $idxLit $tagStrLit (some $listExpr))
+      let objExpr ← `($putObjectFn [$fieldPairs,*])
+      let body ← `($putVariantFn $idxLit $tagStrLit (some $objExpr))
       return (pat.raw, body.raw)
 
 private def mkMatchExpr (discr : Syntax) (alts : Array (Syntax × Syntax)) : Syntax :=
@@ -101,12 +114,12 @@ private def mkMatchExpr (discr : Syntax) (alts : Array (Syntax × Syntax)) : Syn
     matchAltsNode
   ]
 
-private def mkEnumSerializeBody (view : InductiveVal) (argName : Name) : MetaM (TSyntax `term) := do
+private def mkEnumSerializeBody (view : InductiveVal) (argName : Name) (recFnIdent : Option Ident := none) : MetaM (TSyntax `term) := do
   let argIdent := mkRawIdent argName
 
   let mut alts : Array (Syntax × Syntax) := #[]
   for (idx, ctorName) in view.ctors.toArray.mapIdx (·, ·) do
-    let alt ← mkCtorSerializeAlt view idx ctorName
+    let alt ← mkCtorSerializeAlt view idx ctorName recFnIdent
     alts := alts.push alt
 
   if alts.isEmpty then
@@ -126,6 +139,74 @@ private def getTypeParams (view : InductiveVal) : MetaM (Array Name) := do
       names := names.push name
     return names
 
+private def isRecursiveType (view : InductiveVal) : MetaM Bool := do
+  for ctorName in view.ctors do
+    let ctorInfo ← getConstInfoCtor ctorName
+    let isRec ← forallTelescopeReducing ctorInfo.type fun params _ => do
+      let fieldParams := params[view.numParams:]
+      for param in fieldParams do
+        let paramType ← inferType param
+        if paramType.isAppOf view.name then
+          return true
+      return false
+    if isRec then return true
+  return false
+
+private def countCtorFields (view : InductiveVal) (ctorName : Name) : MetaM (Nat × Nat) := do
+  let ctorInfo ← getConstInfoCtor ctorName
+  forallTelescopeReducing ctorInfo.type fun params _ => do
+    let fieldParams := params[view.numParams:]
+    fieldParams.foldlM (init := (0, 0)) fun (nonRec, rec) param => do
+      let paramType ← inferType param
+      if paramType.isAppOf view.name then
+        return (nonRec, rec + 1)
+      else
+        return (nonRec + 1, rec)
+
+private def findBaseConstructor (view : InductiveVal) : MetaM (Option (Name × Nat × Nat)) := do
+  let mut best : Option (Name × Nat × Nat) := none
+  for ctorName in view.ctors do
+    let (nonRecCount, recCount) ← countCtorFields view ctorName
+    if recCount == 0 then
+      match best with
+      | none => best := some (ctorName, nonRecCount, recCount)
+      | some (_, bestNonRec, _) =>
+          if nonRecCount < bestNonRec then
+            best := some (ctorName, nonRecCount, recCount)
+  return best
+
+private def mkInhabitedInstance (view : InductiveVal) (typeParamNames : Array Name) : CommandElabM Unit := do
+  let some (ctorName, numNonRecFields, _) := (← liftTermElabM <| findBaseConstructor view) | return
+  let typeIdent := mkCIdent view.name
+  let ctorIdent := mkCIdent ctorName
+  let inhabitedClass := mkCIdent ``Inhabited
+
+  let appliedType : TSyntax `term ←
+    if typeParamNames.isEmpty then
+      pure ⟨typeIdent⟩
+    else
+      let paramIdents : TSyntaxArray `term := ⟨typeParamNames.map (fun n => (⟨mkRawIdent n⟩ : TSyntax `term)) |>.toList⟩
+      `($typeIdent $paramIdents*)
+
+  let defaultExpr ← if numNonRecFields == 0 then
+    pure ⟨ctorIdent⟩
+  else
+    let defaultIdent := mkCIdent ``default
+    let defaults : TSyntaxArray `term := ⟨(List.replicate numNonRecFields (⟨defaultIdent⟩ : TSyntax `term))⟩
+    `($ctorIdent $defaults*)
+
+  let mut sigType : TSyntax `term ← `($inhabitedClass $appliedType)
+  if numNonRecFields > 0 then
+    for n in typeParamNames.reverse do
+      let paramIdent := mkIdent n
+      sigType ← `([$inhabitedClass $paramIdent] → $sigType)
+
+  let cmd ← `(command|
+    instance : $sigType where
+      default := $defaultExpr
+  )
+  elabCommand cmd
+
 def mkSerializeHandler (declNames : Array Name) : CommandElabM Bool := do
   if declNames.size != 1 then
     return false
@@ -140,12 +221,16 @@ def mkSerializeHandler (declNames : Array Name) : CommandElabM Bool := do
 
   let argName := Name.mkSimple "__serialArg"
 
+  let isRec ← liftTermElabM <| isRecursiveType view
+  let recFnBaseName := declName ++ `__serializeRec
+
   let (serializeBody, typeParamNames) ← liftTermElabM do
+    let recFnIdent := if isRec then some (mkRawIdent recFnBaseName) else none
     let body ← if isStruct then
       let fields ← getStructureFields declName
       mkStructSerializeBody declName fields argName
     else
-      mkEnumSerializeBody view argName
+      mkEnumSerializeBody view argName recFnIdent
     let typeParams ← getTypeParams view
     return (body, typeParams)
 
@@ -165,12 +250,35 @@ def mkSerializeHandler (declNames : Array Name) : CommandElabM Bool := do
     let paramIdent := mkIdent n
     sigType ← `([$serializeClass $paramIdent] → $sigType)
 
-  let cmd ← `(command|
-    instance : $sigType where
-      serialize := fun $argIdent => $serializeBody
-  )
+  if isRec then
+    let recFnIdent := mkRawIdent recFnBaseName
+    let mIdent := mkRawIdent `m
+    let encoderClass := mkCIdent ``Encoder
+    let monadClass := mkCIdent ``Monad
 
-  elabCommand cmd
+    let mut recFnType : TSyntax `term ← `($appliedType → $mIdent Unit)
+    recFnType ← `({$mIdent : Type → Type} → [$monadClass $mIdent] → [$encoderClass $mIdent] → $recFnType)
+    for n in typeParamNames.reverse do
+      let paramIdent := mkIdent n
+      recFnType ← `([$serializeClass $paramIdent] → $recFnType)
+
+    let cmd ← `(command|
+      partial def $recFnIdent : $recFnType := fun $argIdent => $serializeBody
+    )
+    elabCommand cmd
+
+    let instCmd ← `(command|
+      instance : $sigType where
+        serialize := $recFnIdent
+    )
+    elabCommand instCmd
+  else
+    let cmd ← `(command|
+      instance : $sigType where
+        serialize := fun $argIdent => $serializeBody
+    )
+    elabCommand cmd
+
   return true
 
 initialize registerDerivingHandler ``Serialize mkSerializeHandler
@@ -202,7 +310,7 @@ private def mkStructDeserializeBody (structName : Name) (fields : Array Name) (a
 
     pure result
 
-private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) : MetaM (TSyntax `term) := do
+private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) (recFnIdent : Option Ident := none) : MetaM (TSyntax `term) := do
   let matchVariantFn := mkCIdent ``Decoder.matchVariant
   let deserializeFn := mkCIdent ``Deserialize.deserialize
   let failFn := mkCIdent ``Decoder.fail
@@ -214,15 +322,23 @@ private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) : Meta
     let ctorIdent := mkCIdent ctorName
     let idxLit : TSyntax `term := ⟨Syntax.mkNumLit (toString idx)⟩
 
-    let numFields ← forallTelescopeReducing ctorInfo.type fun params _ => do
+    let (numFields, fieldTypes) ← forallTelescopeReducing ctorInfo.type fun params _ => do
       let fieldParams := params[view.numParams:]
-      return fieldParams.size
+      let mut types : Array Expr := #[]
+      for param in fieldParams do
+        types := types.push (← inferType param)
+      return (fieldParams.size, types)
 
     let body ← if numFields == 0 then
       `(pure $ctorIdent)
     else if numFields == 1 then
-      `($ctorIdent <$> $deserializeFn)
+      let useRecFn := recFnIdent.isSome && fieldTypes[0]!.isAppOf view.name
+      if useRecFn then
+        `($ctorIdent <$> $(recFnIdent.get!))
+      else
+        `($ctorIdent <$> $deserializeFn)
     else
+      let getFieldFn := mkCIdent ``Decoder.getField
       let mut fieldIdents : Array Ident := #[]
       for i in [:numFields] do
         fieldIdents := fieldIdents.push (mkRawIdent (Name.mkSimple s!"__f{i}"))
@@ -232,7 +348,10 @@ private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) : Meta
       for i in [:numFields] do
         let ridx := numFields - 1 - i
         let fieldIdent := fieldIdents[ridx]!
-        innerResult ← `($deserializeFn >>= fun $fieldIdent => $innerResult)
+        let useRecFn := recFnIdent.isSome && fieldTypes[ridx]!.isAppOf view.name
+        let deser ← if useRecFn then pure (recFnIdent.get! : TSyntax `term) else `($deserializeFn)
+        let keyStr := Syntax.mkStrLit s!"_{ridx}"
+        innerResult ← `($getFieldFn $keyStr $deser >>= fun $fieldIdent => $innerResult)
 
       pure innerResult
 
@@ -280,12 +399,16 @@ def mkDeserializeHandler (declNames : Array Name) : CommandElabM Bool := do
   let isStruct := view.ctors.length == 1 && (view.ctors[0]!).getString! == "mk"
   let argName := Name.mkSimple "__deserialArg"
 
+  let isRec ← liftTermElabM <| isRecursiveType view
+  let recFnImplName := declName ++ `__deserializeRecImpl
+
   let (deserializeBody, typeParamNames) ← liftTermElabM do
+    let recFnIdent := if isRec then some (mkRawIdent recFnImplName) else none
     let body ← if isStruct then
       let fields ← getStructureFieldNames declName
       mkStructDeserializeBody declName fields argName
     else
-      mkEnumDeserializeBody view argName
+      mkEnumDeserializeBody view argName recFnIdent
     let typeParams ← getTypeParams view
     return (body, typeParams)
 
@@ -305,12 +428,37 @@ def mkDeserializeHandler (declNames : Array Name) : CommandElabM Bool := do
     let paramIdent := mkIdent n
     sigType ← `([$deserializeClass $paramIdent] → $sigType)
 
-  let cmd ← `(command|
-    instance : $sigType where
-      deserialize := $deserializeBody
-  )
+  if isRec then
+    mkInhabitedInstance view typeParamNames
 
-  elabCommand cmd
+    let recFnIdent := mkRawIdent recFnImplName
+    let mIdent := mkRawIdent `m
+    let decoderClass := mkCIdent ``Decoder
+    let monadClass := mkCIdent ``Monad
+
+    let mut recFnType : TSyntax `term ← `($mIdent $appliedType)
+    recFnType ← `({$mIdent : Type → Type} → [$monadClass $mIdent] → [$decoderClass $mIdent] → $recFnType)
+    for n in typeParamNames.reverse do
+      let paramIdent := mkIdent n
+      recFnType ← `([$deserializeClass $paramIdent] → $recFnType)
+
+    let cmd ← `(command|
+      partial def $recFnIdent : $recFnType := $deserializeBody
+    )
+    elabCommand cmd
+
+    let instCmd ← `(command|
+      instance : $sigType where
+        deserialize := $recFnIdent
+    )
+    elabCommand instCmd
+  else
+    let cmd ← `(command|
+      instance : $sigType where
+        deserialize := $deserializeBody
+    )
+    elabCommand cmd
+
   return true
 
 initialize registerDerivingHandler ``Deserialize mkDeserializeHandler
