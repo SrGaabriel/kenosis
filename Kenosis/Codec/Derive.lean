@@ -124,6 +124,64 @@ private def mkIfElseChain (cases : Array (TSyntax `term × TSyntax `term)) (defa
       result ← `(if $cond then $body else $result)
     return result
 
+private partial def mkIndexBinarySearch
+    (idxIdent : Ident)
+    (bodies : Array (TSyntax `term))
+    (lo hi : Nat)
+    (defaultCase : TSyntax `term) : MetaM (TSyntax `term) := do
+  if lo > hi then
+    return defaultCase
+  else if lo == hi then
+    return bodies[lo]!
+  else if lo + 1 == hi then
+    let loLit : TSyntax `term := ⟨Syntax.mkNumLit (toString lo)⟩
+    let loCond ← `($idxIdent == $loLit)
+    `(if $loCond then $(bodies[lo]!) else $(bodies[hi]!))
+  else
+    let mid := (lo + hi) / 2
+    let midLit : TSyntax `term := ⟨Syntax.mkNumLit (toString mid)⟩
+    let leftBranch ← mkIndexBinarySearch idxIdent bodies lo (mid - 1) defaultCase
+    let midBody := bodies[mid]!
+    let rightBranch ← mkIndexBinarySearch idxIdent bodies (mid + 1) hi defaultCase
+    let midCond ← `($idxIdent == $midLit)
+    let ltCond ← `($idxIdent < $midLit)
+    `(if $ltCond then $leftBranch else if $midCond then $midBody else $rightBranch)
+
+private partial def mkNameToIndexBinarySearch
+    (nameIdent : Ident)
+    (indexFnIdent : Ident)
+    (nameToIdx : Array (String × Nat))
+    (lo hi : Nat)
+    (defaultCase : TSyntax `term) : MetaM (TSyntax `term) := do
+  if lo > hi then
+    return defaultCase
+  else if lo == hi then
+    let (name, idx) := nameToIdx[lo]!
+    let nameStr : TSyntax `term := ⟨Syntax.mkStrLit name⟩
+    let idxLit : TSyntax `term := ⟨Syntax.mkNumLit (toString idx)⟩
+    let cond ← `($nameIdent == $nameStr)
+    `(if $cond then $indexFnIdent $idxLit else $defaultCase)
+  else if lo + 1 == hi then
+    let (loName, loIdx) := nameToIdx[lo]!
+    let (hiName, hiIdx) := nameToIdx[hi]!
+    let loNameStr : TSyntax `term := ⟨Syntax.mkStrLit loName⟩
+    let hiNameStr : TSyntax `term := ⟨Syntax.mkStrLit hiName⟩
+    let loIdxLit : TSyntax `term := ⟨Syntax.mkNumLit (toString loIdx)⟩
+    let hiIdxLit : TSyntax `term := ⟨Syntax.mkNumLit (toString hiIdx)⟩
+    let loCond ← `($nameIdent == $loNameStr)
+    let hiCond ← `($nameIdent == $hiNameStr)
+    `(if $loCond then $indexFnIdent $loIdxLit else if $hiCond then $indexFnIdent $hiIdxLit else $defaultCase)
+  else
+    let mid := (lo + hi) / 2
+    let (midName, midIdx) := nameToIdx[mid]!
+    let midNameStr : TSyntax `term := ⟨Syntax.mkStrLit midName⟩
+    let midIdxLit : TSyntax `term := ⟨Syntax.mkNumLit (toString midIdx)⟩
+    let leftBranch ← mkNameToIndexBinarySearch nameIdent indexFnIdent nameToIdx lo (mid - 1) defaultCase
+    let rightBranch ← mkNameToIndexBinarySearch nameIdent indexFnIdent nameToIdx (mid + 1) hi defaultCase
+    let midCond ← `($nameIdent == $midNameStr)
+    let ltCond ← `($nameIdent < $midNameStr)
+    `(if $ltCond then $leftBranch else if $midCond then $indexFnIdent $midIdxLit else $rightBranch)
+
 private def mkEnumSerializeBody (view : InductiveVal) (argName : Name) (recFnMap : List (Name × Ident) := []) : MetaM (TSyntax `term) := do
   let argIdent := mkRawIdent argName
 
@@ -542,32 +600,31 @@ private def mkEnumDeserializeBody (view : InductiveVal) (_argName : Name) (recFn
 
     indexAlts := indexAlts.push (idxLit, body)
 
-  let mut nameAlts : Array (TSyntax `term × TSyntax `term) := #[]
+  let mut nameToIdx : Array (String × Nat) := #[]
   for (idx, ctorName) in view.ctors.toArray.mapIdx (·, ·) do
     let shortName := ctorName.getString!
-    let tagStrLit : TSyntax `term := ⟨Syntax.mkStrLit shortName⟩
-
-    let body := indexAlts[idx]!.2
-    nameAlts := nameAlts.push (tagStrLit, body)
+    nameToIdx := nameToIdx.push (shortName, idx)
 
   let idxIdent := mkRawIdent `__idx
   let nameIdent := mkRawIdent `__name
+  let indexFnIdent := mkRawIdent `__indexFn
 
-  let mut indexCases : Array (TSyntax `term × TSyntax `term) := #[]
-  for (idxLit, body) in indexAlts do
-    let cond ← `($idxIdent == $idxLit)
-    indexCases := indexCases.push (cond, body)
+  let indexBodies := indexAlts.map (·.2)
   let defaultIdx ← `($failFn s!"invalid variant index: {$idxIdent}")
-  let indexMatch ← mkIfElseChain indexCases defaultIdx
+  let indexMatch ← if indexBodies.isEmpty then
+    pure defaultIdx
+  else
+    mkIndexBinarySearch idxIdent indexBodies 0 (indexBodies.size - 1) defaultIdx
 
-  let mut nameCases : Array (TSyntax `term × TSyntax `term) := #[]
-  for (tagStrLit, body) in nameAlts do
-    let cond ← `($nameIdent == $tagStrLit)
-    nameCases := nameCases.push (cond, body)
   let defaultName ← `($failFn s!"unknown variant: {$nameIdent}")
-  let nameMatch ← mkIfElseChain nameCases defaultName
 
-  `($matchVariantFn $numCtors (fun $idxIdent => $indexMatch) (fun $nameIdent => $nameMatch))
+  let sortedNameToIdx := nameToIdx.qsort (fun a b => a.1 < b.1)
+  let nameMatch ← if sortedNameToIdx.isEmpty then
+    pure defaultName
+  else
+    mkNameToIndexBinarySearch nameIdent indexFnIdent sortedNameToIdx 0 (sortedNameToIdx.size - 1) defaultName
+
+  `(let $indexFnIdent := fun $idxIdent => $indexMatch; $matchVariantFn $numCtors $indexFnIdent (fun $nameIdent => $nameMatch))
 
 private def mkDeserializeHandlerSingle (declName : Name) : CommandElabM Bool := do
   let env ← getEnv
