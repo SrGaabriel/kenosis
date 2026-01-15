@@ -111,6 +111,10 @@ def getInt64be : Get Int64 := do
   let w ← getWord64be
   pure w.toInt64
 
+def getFloat64be : Get Float := do
+  let w ← getWord64be
+  pure (Float.ofBits w)
+
 partial def getNatLeb128 : Get Nat := do
   let rec go (acc : Nat) (shift : Nat) : Get Nat := do
     let byte ← getWord8

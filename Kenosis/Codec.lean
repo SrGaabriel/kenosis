@@ -5,6 +5,7 @@ class Encoder (m : Type → Type) where
   putNat : Nat → m Unit
   putInt : Int → m Unit
   putInt64 : Int64 → m Unit
+  putFloat : Float → m Unit
   putString : String → m Unit
   putNull : m Unit
   putList : List (m Unit) → m Unit
@@ -16,6 +17,7 @@ class Decoder (m : Type → Type) where
   getNat : m Nat
   getInt : m Int
   getInt64 : m Int64
+  getFloat : m Float
   getString : m String
   getNull : m Unit
   getList : m α → m (List α)
@@ -54,6 +56,12 @@ instance : Serialize Int64 where
 
 instance : Deserialize Int64 where
   deserialize := Decoder.getInt64
+
+instance : Serialize Float where
+  serialize n := Encoder.putFloat n
+
+instance : Deserialize Float where
+  deserialize := Decoder.getFloat
 
 instance : Serialize String where
   serialize s := Encoder.putString s

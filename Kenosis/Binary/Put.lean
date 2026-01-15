@@ -60,6 +60,9 @@ def putInt32be (n : Int32) : Put Unit :=
 def putInt64be (n : Int64) : Put Unit :=
   putWord64be n.toUInt64
 
+def putFloat64be (f : Float) : Put Unit :=
+  putWord64be f.toBits
+
 partial def putNatLeb128 (n : Nat) : Put Unit := do
   let byte := (n % 128).toUInt8
   let rest := n / 128

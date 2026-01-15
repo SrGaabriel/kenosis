@@ -11,6 +11,7 @@ instance : Encoder Put where
   putNat := putNatLeb128
   putInt := putIntLeb128
   putInt64 := putInt64be
+  putFloat := putFloat64be
   putString := putString
   putNull := pure ()
 
@@ -34,6 +35,7 @@ instance : Decoder Get where
   getNat := getNatLeb128
   getInt := getIntLeb128
   getInt64 := getInt64be
+  getFloat := getFloat64be
   getString := getString
   getNull := pure ()
 

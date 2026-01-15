@@ -44,6 +44,7 @@ instance : Encoder JsonWriter where
   putNat n := write (toString n)
   putInt n := write (toString n)
   putInt64 n := write (toString n)
+  putFloat f := write (toString f)
   putString s := writeJsonString s
   putNull := write "null"
 
@@ -74,11 +75,11 @@ instance : Encoder JsonWriter where
 inductive JsonValue where
   | null
   | bool (b : Bool)
-  | num (n : Int)
+  | num (n : Float)
   | str (s : String)
   | arr (xs : List JsonValue)
   | obj (fields : List (String × JsonValue))
-  deriving Repr, BEq, Inhabited
+  deriving Repr, Inhabited
 
 inductive JsonError where
   | unexpectedEof (expected : String)
@@ -231,38 +232,57 @@ partial def readDigits (acc : Nat) (hasDigits : Bool) : JsonReader (Nat × Bool)
       pure (acc, hasDigits)
   | none => pure (acc, hasDigits)
 
-partial def parseNumber : JsonReader Int := do
+partial def parseNumber : JsonReader Float := do
   skipWhitespace
   let c? ← peek
   let negative ← match c? with
     | some '-' => do advance; pure true
     | _ => pure false
 
-  let (n, hasDigits) ← readDigits 0 false
-
-  if !hasDigits then do
+  let (intPart, hasIntDigits) ← readDigits 0 false
+  if !hasIntDigits then do
     let pos ← getPos
     throw (.invalidNumber pos)
 
   let c? ← peek
-  match c? with
-  | some '.' => do
-    advance
-    let _ ← readDigits 0 false
-  | _ => pure ()
+  let (fracPart, fracDigits) ← match c? with
+    | some '.' => do
+      advance
+      let (frac, hasFrac) ← readDigits 0 false
+      if !hasFrac then do
+        let pos ← getPos
+        throw (.invalidNumber pos)
+      let rec countDigits (n : Nat) (count : Nat) : Nat :=
+        if n == 0 then count else countDigits (n / 10) (count + 1)
+      let numFracDigits := if frac == 0 then 1 else countDigits frac 0
+      pure (frac, numFracDigits)
+    | _ => pure (0, 0)
 
   let c? ← peek
-  match c? with
-  | some 'e' | some 'E' => do
-    advance
-    let c? ← peek
-    match c? with
-    | some '+' | some '-' => advance
-    | _ => pure ()
-    let _ ← readDigits 0 false
-  | _ => pure ()
+  let expValue ← match c? with
+    | some 'e' | some 'E' => do
+      advance
+      let c? ← peek
+      let expNeg ← match c? with
+        | some '-' => do advance; pure true
+        | some '+' => do advance; pure false
+        | _ => pure false
+      let (exp, hasExp) ← readDigits 0 false
+      if !hasExp then do
+        let pos ← getPos
+        throw (.invalidNumber pos)
+      pure (if expNeg then -(exp : Int) else exp)
+    | _ => pure (0 : Int)
 
-  if negative then pure (-(n : Int)) else pure n
+  let mantissa := intPart * (10 ^ fracDigits) + fracPart
+  let adjustedExp := expValue - fracDigits
+
+  let result := if adjustedExp >= 0 then
+    Float.ofScientific mantissa false adjustedExp.toNat
+  else
+    Float.ofScientific mantissa true (-adjustedExp).toNat
+
+  pure (if negative then -result else result)
 
 mutual
   partial def parseValue : JsonReader JsonValue := do
@@ -378,25 +398,40 @@ instance : Decoder JsonDecoder where
   getNat := do
     let v ← getValue
     match v with
-    | JsonValue.num n => if n >= 0 then pure n.toNat else failJson "expected non-negative number"
+    | JsonValue.num n =>
+      if n >= 0 && n == n.floor then
+        pure n.toUInt64.toNat
+      else failJson "expected non-negative integer"
     | _ => failJson "expected number"
 
   getInt := do
     let v ← getValue
     match v with
-    | JsonValue.num n => pure n
+    | JsonValue.num n =>
+      if n == n.floor then
+        if n >= 0 then
+          pure n.toUInt64.toNat
+        else
+          pure (-((-n).toUInt64.toNat : Int))
+      else failJson "expected integer"
     | _ => failJson "expected number"
 
   getInt64 := do
     let v ← getValue
     match v with
     | JsonValue.num n =>
-      let minInt64 : Int := -9223372036854775808
-      let maxInt64 : Int := 9223372036854775807
-      if n < minInt64 || n > maxInt64 then
-        failJson s!"number {n} out of Int64 range"
-      else
-        pure n.toInt64
+      if n == n.floor then
+        if n >= 0 then
+          pure (Int64.ofNat n.toUInt64.toNat)
+        else
+          pure (-Int64.ofNat (-n).toUInt64.toNat)
+      else failJson "expected integer"
+    | _ => failJson "expected number"
+
+  getFloat := do
+    let v ← getValue
+    match v with
+    | JsonValue.num n => pure n
     | _ => failJson "expected number"
 
   getString := do
