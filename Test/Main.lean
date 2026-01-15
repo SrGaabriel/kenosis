@@ -42,6 +42,31 @@ inductive RoseTree (α : Type)
   | node (value : α) (children : List (RoseTree α))
   deriving Serialize, Deserialize, BEq, Repr
 
+mutual
+  inductive Expr
+    | lit (n : Nat)
+    | add (e1 e2 : Expr)
+    | letIn (name : String) (value : Expr) (body : Stmt)
+  deriving Serialize, Deserialize, BEq, Repr
+
+  inductive Stmt
+    | expr (e : Expr)
+    | seq (s1 s2 : Stmt)
+    | assign (name : String) (value : Expr)
+  deriving Serialize, Deserialize, BEq, Repr
+end
+
+mutual
+  inductive Forest (α : Type)
+    | nil
+    | cons (tree : MTree α) (rest : Forest α)
+  deriving Serialize, Deserialize, BEq, Repr
+
+  inductive MTree (α : Type)
+    | node (value : α) (children : Forest α)
+  deriving Serialize, Deserialize, BEq, Repr
+end
+
 def testJson (name : String) (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Bool := do
   IO.println s!"  Testing JSON: {name}"
   let encoded := Json.encode x
@@ -169,6 +194,27 @@ def main : IO Unit := do
   allPassed := allPassed && (← testBoth "RoseTree (leaf)" roseLeaf)
   let roseTree := RoseTree.node 1 [RoseTree.node 2 [], RoseTree.node 3 [RoseTree.node 4 []]]
   allPassed := allPassed && (← testBoth "RoseTree (complex)" roseTree)
+
+  IO.println "Mutual Inductive Types"
+  let simpleExpr := Expr.lit 42
+  allPassed := allPassed && (← testBoth "Expr (lit)" simpleExpr)
+  let addExpr := Expr.add (Expr.lit 1) (Expr.lit 2)
+  allPassed := allPassed && (← testBoth "Expr (add)" addExpr)
+  let simpleStmt := Stmt.expr (Expr.lit 10)
+  allPassed := allPassed && (← testBoth "Stmt (expr)" simpleStmt)
+  let seqStmt := Stmt.seq (Stmt.assign "x" (Expr.lit 1)) (Stmt.expr (Expr.lit 2))
+  allPassed := allPassed && (← testBoth "Stmt (seq)" seqStmt)
+  let letExpr := Expr.letIn "y" (Expr.add (Expr.lit 3) (Expr.lit 4)) (Stmt.assign "z" (Expr.lit 5))
+  allPassed := allPassed && (← testBoth "Expr (letIn)" letExpr)
+
+  let emptyForest : Forest Nat := Forest.nil
+  allPassed := allPassed && (← testBoth "Forest (nil)" emptyForest)
+  let singleTree := MTree.node 1 Forest.nil
+  allPassed := allPassed && (← testBoth "MTree (single)" singleTree)
+  let forest := Forest.cons (MTree.node 1 Forest.nil) (Forest.cons (MTree.node 2 Forest.nil) Forest.nil)
+  allPassed := allPassed && (← testBoth "Forest (multiple trees)" forest)
+  let nestedTree := MTree.node 0 (Forest.cons (MTree.node 1 (Forest.cons (MTree.node 2 Forest.nil) Forest.nil)) Forest.nil)
+  allPassed := allPassed && (← testBoth "MTree (nested)" nestedTree)
 
   if allPassed then
     IO.println "All tests passed!"
