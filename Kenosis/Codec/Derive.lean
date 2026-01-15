@@ -234,6 +234,7 @@ private def mkMutualInhabitedInstances (views : Array InductiveVal) (typeParamNa
   let inhabitedClass := mkCIdent ``Inhabited
 
   let mut instanceInfos : Array (Name × Name × Nat × Nat) := #[]
+  for view in views do
     let some (ctorName, numNonRecFields, numRecFields) := (← liftTermElabM <| findBestConstructorForInhabited view) | continue
     instanceInfos := instanceInfos.push (view.name, ctorName, numNonRecFields, numRecFields)
 
