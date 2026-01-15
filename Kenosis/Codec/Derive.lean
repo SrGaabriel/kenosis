@@ -355,10 +355,12 @@ private def mkSerializeHandlerSingle (declName : Name) : CommandElabM Bool := do
   let argName := Name.mkSimple "__serialArg"
 
   let isRec ← liftTermElabM <| isRecursiveType view
-  let recFnBaseName := declName ++ `__serializeRec
+  let fnImplName := declName ++ `__serializeImpl
+  let currNs ← getCurrNamespace
+  let fnRelativeName := fnImplName.replacePrefix currNs Name.anonymous
 
   let (serializeBody, typeParamNames) ← liftTermElabM do
-    let recFnMap := if isRec then [(view.name, mkRawIdent recFnBaseName)] else []
+    let recFnMap := if isRec then [(view.name, mkRawIdent fnRelativeName)] else []
     let body ← if isStruct then
       let fields ← getStructureFields declName
       mkStructSerializeBody declName fields argName
@@ -383,43 +385,42 @@ private def mkSerializeHandlerSingle (declName : Name) : CommandElabM Bool := do
     let paramIdent := mkIdent n
     sigType ← `([$serializeClass $paramIdent] → $sigType)
 
+  let fnDefIdent := mkRawIdent fnRelativeName
+  let fnRefIdent := mkCIdent fnImplName
+  let mIdent := mkRawIdent `m
+  let encoderClass := mkCIdent ``Encoder
+  let monadClass := mkCIdent ``Monad
+
+  let mut fnType : TSyntax `term ← `($appliedType → $mIdent Unit)
+  fnType ← `({$mIdent : Type → Type} → [$monadClass $mIdent] → [$encoderClass $mIdent] → $fnType)
+  for n in typeParamNames.reverse do
+    let paramIdent := mkIdent n
+    fnType ← `([$serializeClass $paramIdent] → $fnType)
+
   if isRec then
-    let recFnIdent := mkRawIdent recFnBaseName
-    let mIdent := mkRawIdent `m
-    let encoderClass := mkCIdent ``Encoder
-    let monadClass := mkCIdent ``Monad
-
-    let mut recFnType : TSyntax `term ← `($appliedType → $mIdent Unit)
-    recFnType ← `({$mIdent : Type → Type} → [$monadClass $mIdent] → [$encoderClass $mIdent] → $recFnType)
-    for n in typeParamNames.reverse do
-      let paramIdent := mkIdent n
-      recFnType ← `([$serializeClass $paramIdent] → $recFnType)
-
-    let bodyWithLetI ← `(letI : $serializeClass $appliedType := ⟨$recFnIdent⟩; $serializeBody)
-
+    let bodyWithLetI ← `(letI : $serializeClass $appliedType := ⟨$fnDefIdent⟩; $serializeBody)
     let cmd ← `(command|
-      partial def $recFnIdent : $recFnType := fun $argIdent => $bodyWithLetI
+      partial def $fnDefIdent : $fnType := fun $argIdent => $bodyWithLetI
     )
     elabCommand cmd
-
-    let instCmd ← `(command|
-      instance : $sigType where
-        serialize := $recFnIdent
-    )
-    elabCommand instCmd
   else
     let cmd ← `(command|
-      instance : $sigType where
-        serialize := fun $argIdent => $serializeBody
+      partial def $fnDefIdent : $fnType := fun $argIdent => $serializeBody
     )
     elabCommand cmd
+
+  let instCmd ← `(command|
+    instance : $sigType where
+      serialize := $fnRefIdent
+  )
+  elabCommand instCmd
 
   return true
 
 private def mkSerializeHandlerMutual (declNames : Array Name) : CommandElabM Bool := do
   let env ← getEnv
 
-  let firstRecFnName := declNames[0]! ++ `__serializeRec
+  let firstRecFnName := declNames[0]! ++ `__serializeImpl
   if env.find? firstRecFnName |>.isSome then
     return true
 
@@ -435,14 +436,20 @@ private def mkSerializeHandlerMutual (declNames : Array Name) : CommandElabM Boo
   let encoderClass := mkCIdent ``Encoder
   let monadClass := mkCIdent ``Monad
 
-  let recFnMap : List (Name × Ident) := declNames.toList.map fun n => (n, mkRawIdent (n ++ `__serializeRec))
+  let currNs ← getCurrNamespace
+  let recFnMap : List (Name × Ident) := declNames.toList.map fun n =>
+    let fullName := n ++ `__serializeImpl
+    let relativeName := fullName.replacePrefix currNs Name.anonymous
+    (n, mkRawIdent relativeName)
 
   let mut mutualDefs : Array (TSyntax `command) := #[]
 
   for (declName, view) in declNames.zip views do
     let argName := Name.mkSimple "__serialArg"
     let argIdent := mkRawIdent argName
-    let recFnIdent := mkRawIdent (declName ++ `__serializeRec)
+    let fullFnName := declName ++ `__serializeImpl
+    let relativeFnName := fullFnName.replacePrefix currNs Name.anonymous
+    let recFnIdent := mkRawIdent relativeFnName
     let typeIdent := mkCIdent declName
 
     let appliedType : TSyntax `term ←
@@ -483,7 +490,7 @@ private def mkSerializeHandlerMutual (declNames : Array Name) : CommandElabM Boo
   elabCommand mutualCmd
 
   for declName in declNames do
-    let recFnIdent := mkRawIdent (declName ++ `__serializeRec)
+    let recFnIdent := mkCIdent (declName ++ `__serializeImpl)
     let typeIdent := mkCIdent declName
 
     let appliedType : TSyntax `term ←
@@ -537,16 +544,13 @@ private def mkStructDeserializeBody (structName : Name) (fields : Array Name) (a
   if fields.isEmpty then
     `(pure $ctorIdent)
   else
-    let fieldIdents : Array Ident := fields.map fun f => mkRawIdent f
-    let fieldArgs : TSyntaxArray `term := ⟨fieldIdents.map (⟨·⟩ : Ident → TSyntax `term) |>.toList⟩
+    let firstFieldStr := Syntax.mkStrLit (toString fields[0]!)
+    let mut result ← `($ctorIdent <$> $getFieldFn $firstFieldStr $deserializeFn)
 
-    let mut result ← `(pure ($ctorIdent $fieldArgs*))
-
-    for i in [:fields.size] do
-      let idx := fields.size - 1 - i
-      let fieldIdent := fieldIdents[idx]!
-      let fieldNameStr := Syntax.mkStrLit (toString fields[idx]!)
-      result ← `($getFieldFn $fieldNameStr $deserializeFn >>= fun $fieldIdent => $result)
+    for i in [1:fields.size] do
+      let fieldNameStr := Syntax.mkStrLit (toString fields[i]!)
+      let fieldExpr ← `($getFieldFn $fieldNameStr $deserializeFn)
+      result ← `($result <*> $fieldExpr)
 
     pure result
 
@@ -636,10 +640,12 @@ private def mkDeserializeHandlerSingle (declName : Name) : CommandElabM Bool := 
   let argName := Name.mkSimple "__deserialArg"
 
   let isRec ← liftTermElabM <| isRecursiveType view
-  let recFnImplName := declName ++ `__deserializeRecImpl
+  let fnImplName := declName ++ `__deserializeImpl
+  let currNs ← getCurrNamespace
+  let fnRelativeName := fnImplName.replacePrefix currNs Name.anonymous
 
   let (deserializeBody, typeParamNames) ← liftTermElabM do
-    let recFnMap := if isRec then [(view.name, mkRawIdent recFnImplName)] else []
+    let recFnMap := if isRec then [(view.name, mkRawIdent fnRelativeName)] else []
     let body ← if isStruct then
       let fields ← getStructureFieldNames declName
       mkStructDeserializeBody declName fields argName
@@ -674,48 +680,46 @@ private def mkDeserializeHandlerSingle (declName : Name) : CommandElabM Bool := 
     else
       sigType ← `([$deserializeClass $paramIdent] → $sigType)
 
+  let fnDefIdent := mkRawIdent fnRelativeName
+  let fnRefIdent := mkCIdent fnImplName
+  let mIdent := mkRawIdent `m
+  let decoderClass := mkCIdent ``Decoder
+  let monadClass := mkCIdent ``Monad
+
+  let mut fnType : TSyntax `term ← `($mIdent $appliedType)
+  fnType ← `({$mIdent : Type → Type} → [$monadClass $mIdent] → [$decoderClass $mIdent] → $fnType)
+  for n in typeParamNames.reverse do
+    let paramIdent := mkIdent n
+    if needsInhabitedConstraints then
+      fnType ← `([$inhabitedClass $paramIdent] → [$deserializeClass $paramIdent] → $fnType)
+    else
+      fnType ← `([$deserializeClass $paramIdent] → $fnType)
+
   if isRec then
     mkInhabitedInstance view typeParamNames
-
-    let recFnIdent := mkRawIdent recFnImplName
-    let mIdent := mkRawIdent `m
-    let decoderClass := mkCIdent ``Decoder
-    let monadClass := mkCIdent ``Monad
-
-    let mut recFnType : TSyntax `term ← `($mIdent $appliedType)
-    recFnType ← `({$mIdent : Type → Type} → [$monadClass $mIdent] → [$decoderClass $mIdent] → $recFnType)
-    for n in typeParamNames.reverse do
-      let paramIdent := mkIdent n
-      if needsInhabitedConstraints then
-        recFnType ← `([$inhabitedClass $paramIdent] → [$deserializeClass $paramIdent] → $recFnType)
-      else
-        recFnType ← `([$deserializeClass $paramIdent] → $recFnType)
-
-    let bodyWithLetI ← `(letI : $deserializeClass $appliedType := ⟨$recFnIdent⟩; $deserializeBody)
-
+    let bodyWithLetI ← `(letI : $deserializeClass $appliedType := ⟨$fnDefIdent⟩; $deserializeBody)
     let cmd ← `(command|
-      partial def $recFnIdent : $recFnType := $bodyWithLetI
+      partial def $fnDefIdent : $fnType := $bodyWithLetI
     )
     elabCommand cmd
-
-    let instCmd ← `(command|
-      instance : $sigType where
-        deserialize := $recFnIdent
-    )
-    elabCommand instCmd
   else
     let cmd ← `(command|
-      instance : $sigType where
-        deserialize := $deserializeBody
+      partial def $fnDefIdent : $fnType := $deserializeBody
     )
     elabCommand cmd
+
+  let instCmd ← `(command|
+    instance : $sigType where
+      deserialize := $fnRefIdent
+  )
+  elabCommand instCmd
 
   return true
 
 private def mkDeserializeHandlerMutual (declNames : Array Name) : CommandElabM Bool := do
   let env ← getEnv
 
-  let firstRecFnName := declNames[0]! ++ `__deserializeRecImpl
+  let firstRecFnName := declNames[0]! ++ `__deserializeImpl
   if env.find? firstRecFnName |>.isSome then
     return true
 
@@ -732,7 +736,11 @@ private def mkDeserializeHandlerMutual (declNames : Array Name) : CommandElabM B
   let monadClass := mkCIdent ``Monad
   let inhabitedClass := mkCIdent ``Inhabited
 
-  let recFnMap : List (Name × Ident) := declNames.toList.map fun n => (n, mkRawIdent (n ++ `__deserializeRecImpl))
+  let currNs ← getCurrNamespace
+  let recFnMap : List (Name × Ident) := declNames.toList.map fun n =>
+    let fullName := n ++ `__deserializeImpl
+    let relativeName := fullName.replacePrefix currNs Name.anonymous
+    (n, mkRawIdent relativeName)
 
   mkMutualInhabitedInstances views typeParamNames
 
@@ -745,7 +753,9 @@ private def mkDeserializeHandlerMutual (declNames : Array Name) : CommandElabM B
   let mut mutualDefs : Array (TSyntax `command) := #[]
 
   for (declName, view) in declNames.zip views do
-    let recFnIdent := mkRawIdent (declName ++ `__deserializeRecImpl)
+    let fullFnName := declName ++ `__deserializeImpl
+    let relativeFnName := fullFnName.replacePrefix currNs Name.anonymous
+    let recFnIdent := mkRawIdent relativeFnName
     let typeIdent := mkCIdent declName
 
     let appliedType : TSyntax `term ←
@@ -790,7 +800,7 @@ private def mkDeserializeHandlerMutual (declNames : Array Name) : CommandElabM B
   elabCommand mutualCmd
 
   for (declName, _view) in declNames.zip views do
-    let recFnIdent := mkRawIdent (declName ++ `__deserializeRecImpl)
+    let recFnIdent := mkCIdent (declName ++ `__deserializeImpl)
     let typeIdent := mkCIdent declName
 
     let appliedType : TSyntax `term ←
