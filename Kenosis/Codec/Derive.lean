@@ -139,6 +139,9 @@ private def getTypeParams (view : InductiveVal) : MetaM (Array Name) := do
       names := names.push name
     return names
 
+private def typeContainsName (targetName : Name) (e : Expr) : Bool :=
+  e.find? (fun sub => sub.isAppOf targetName) |>.isSome
+
 private def isRecursiveType (view : InductiveVal) : MetaM Bool := do
   for ctorName in view.ctors do
     let ctorInfo ← getConstInfoCtor ctorName
@@ -146,7 +149,7 @@ private def isRecursiveType (view : InductiveVal) : MetaM Bool := do
       let fieldParams := params[view.numParams:]
       for param in fieldParams do
         let paramType ← inferType param
-        if paramType.isAppOf view.name then
+        if typeContainsName view.name paramType then
           return true
       return false
     if isRec then return true
@@ -262,8 +265,10 @@ def mkSerializeHandler (declNames : Array Name) : CommandElabM Bool := do
       let paramIdent := mkIdent n
       recFnType ← `([$serializeClass $paramIdent] → $recFnType)
 
+    let bodyWithLetI ← `(letI : $serializeClass $appliedType := ⟨$recFnIdent⟩; $serializeBody)
+
     let cmd ← `(command|
-      partial def $recFnIdent : $recFnType := fun $argIdent => $serializeBody
+      partial def $recFnIdent : $recFnType := fun $argIdent => $bodyWithLetI
     )
     elabCommand cmd
 
@@ -423,10 +428,20 @@ def mkDeserializeHandler (declNames : Array Name) : CommandElabM Bool := do
       let paramIdents : TSyntaxArray `term := ⟨typeParamNames.map (fun n => (⟨mkRawIdent n⟩ : TSyntax `term)) |>.toList⟩
       `($typeIdent $paramIdents*)
 
+  let needsInhabitedConstraints ← liftTermElabM do
+    if !isRec then return false
+    let some (_, numNonRecFields, _) ← findBaseConstructor view | return true
+    return numNonRecFields > 0
+
+  let inhabitedClass := mkCIdent ``Inhabited
+
   let mut sigType : TSyntax `term ← `($deserializeClass $appliedType)
   for n in typeParamNames.reverse do
     let paramIdent := mkIdent n
-    sigType ← `([$deserializeClass $paramIdent] → $sigType)
+    if needsInhabitedConstraints then
+      sigType ← `([$inhabitedClass $paramIdent] → [$deserializeClass $paramIdent] → $sigType)
+    else
+      sigType ← `([$deserializeClass $paramIdent] → $sigType)
 
   if isRec then
     mkInhabitedInstance view typeParamNames
@@ -440,10 +455,15 @@ def mkDeserializeHandler (declNames : Array Name) : CommandElabM Bool := do
     recFnType ← `({$mIdent : Type → Type} → [$monadClass $mIdent] → [$decoderClass $mIdent] → $recFnType)
     for n in typeParamNames.reverse do
       let paramIdent := mkIdent n
-      recFnType ← `([$deserializeClass $paramIdent] → $recFnType)
+      if needsInhabitedConstraints then
+        recFnType ← `([$inhabitedClass $paramIdent] → [$deserializeClass $paramIdent] → $recFnType)
+      else
+        recFnType ← `([$deserializeClass $paramIdent] → $recFnType)
+
+    let bodyWithLetI ← `(letI : $deserializeClass $appliedType := ⟨$recFnIdent⟩; $deserializeBody)
 
     let cmd ← `(command|
-      partial def $recFnIdent : $recFnType := $deserializeBody
+      partial def $recFnIdent : $recFnType := $bodyWithLetI
     )
     elabCommand cmd
 

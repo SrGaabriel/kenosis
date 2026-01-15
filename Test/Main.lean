@@ -38,6 +38,10 @@ inductive Tree (α : Type)
   | node (value : α) (left : Tree α) (right : Tree α)
   deriving Serialize, Deserialize, BEq, Repr
 
+inductive RoseTree (α : Type)
+  | node (value : α) (children : List (RoseTree α))
+  deriving Serialize, Deserialize, BEq, Repr
+
 def testJson (name : String) (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Bool := do
   IO.println s!"  Testing JSON: {name}"
   let encoded := Json.encode x
@@ -159,6 +163,12 @@ def main : IO Unit := do
   allPassed := allPassed && (← testBoth "Tree (single node)" (Tree.node 42 Tree.leaf Tree.leaf : Tree Nat))
   let complexTree := Tree.node 1 (Tree.node 2 Tree.leaf Tree.leaf) (Tree.node 3 (Tree.node 4 Tree.leaf Tree.leaf) Tree.leaf)
   allPassed := allPassed && (← testBoth "Tree (complex)" complexTree)
+
+  IO.println "Indirectly Recursive Types"
+  let roseLeaf := RoseTree.node 1 []
+  allPassed := allPassed && (← testBoth "RoseTree (leaf)" roseLeaf)
+  let roseTree := RoseTree.node 1 [RoseTree.node 2 [], RoseTree.node 3 [RoseTree.node 4 []]]
+  allPassed := allPassed && (← testBoth "RoseTree (complex)" roseTree)
 
   if allPassed then
     IO.println "All tests passed!"
