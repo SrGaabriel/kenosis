@@ -5,10 +5,8 @@ namespace Kenosis
 
 open Lean Elab Command Term Meta Syntax
 
-
-
 private def mkRawIdent (n : Name) : Ident :=
-  ⟨Syntax.ident SourceInfo.none n.toString.toSubstring n []⟩
+  ⟨Syntax.ident SourceInfo.none n.toString.toRawSubstring n []⟩
 
 private def mkRawQualIdent (n : Name) : Ident := mkRawIdent n
 
