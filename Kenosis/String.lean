@@ -1,4 +1,4 @@
-namespace Kenosis
+namespace Kenosis.String
 
 inductive StringError where
   | unexpectedEof (expected : String)
@@ -123,3 +123,4 @@ def expectString (expected : String) : StringReader Unit := do
       go cs
   go expected.toList
 
+end Kenosis.String

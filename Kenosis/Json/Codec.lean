@@ -5,6 +5,7 @@ import Kenosis.String
 namespace Kenosis.Json
 
 open Kenosis
+open Kenosis.String
 
 def writeJsonString (s : String) : StringWriter Unit := do
   write "\""
