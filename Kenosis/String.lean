@@ -1,3 +1,5 @@
+import Kenosis.Utils
+
 namespace Kenosis.String
 
 inductive StringError where
@@ -24,22 +26,22 @@ structure WriterState where
   buffer : String
   deriving Inhabited
 
-def StringWriter (α : Type) := WriterState → (α × WriterState)
+def StringWriter (_β : Type) (α : Type) := WriterState → (α × WriterState)
 
-instance : Monad StringWriter where
+instance (β : Type) : Monad (StringWriter β) where
   pure a := fun s => (a, s)
   bind m f := fun s =>
     let (a, s') := m s
     f a s'
 
-def StringWriter.run (w : StringWriter Unit) : String :=
+def StringWriter.run {β : Type} (w : StringWriter β Unit) : String :=
   let ((), s) := w { buffer := "" }
   s.buffer
 
-def write (str : String) : StringWriter Unit := fun s =>
+def write (str : String) {β : Type} : StringWriter β Unit := fun s =>
   ((), { buffer := s.buffer ++ str })
   
-def writeListWith (sep : String) (elems : List (StringWriter Unit)) : StringWriter Unit :=
+def writeListWith {β : Type} (sep : String) (elems : List (StringWriter β Unit)) : StringWriter β Unit :=
   match elems with
   | [] => pure ()
   | [e] => e
@@ -48,6 +50,11 @@ def writeListWith (sep : String) (elems : List (StringWriter Unit)) : StringWrit
     es.forM fun elem => do
       write sep
       elem
+      
+def writeEscapedString {β : Type} (s : String) : StringWriter β Unit := do
+  write "\""
+  write (escapeString s)
+  write "\""
 
 structure ReaderState where
   input : String

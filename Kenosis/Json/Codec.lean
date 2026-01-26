@@ -7,18 +7,17 @@ namespace Kenosis.Json
 open Kenosis
 open Kenosis.String
 
-def writeJsonString (s : String) : StringWriter Unit := do
-  write "\""
-  write (escapeString s)
-  write "\""
+structure JsonTag
 
-instance : Encoder StringWriter where
+abbrev JsonWriter (α : Type) := StringWriter JsonTag α
+  
+instance : Encoder JsonWriter where
   putBool b := write (if b then "true" else "false")
   putNat n := write (toString n)
   putInt n := write (toString n)
   putInt64 n := write (toString n)
   putFloat f := write (toString f)
-  putString s := writeJsonString s
+  putString s := writeEscapedString s
   putNull := write "null"
 
   putList elems := do
@@ -29,7 +28,7 @@ instance : Encoder StringWriter where
   putObject fields := do
     write "{"
     let fieldWriters := fields.map fun (name, putValue) => do
-      writeJsonString name
+      writeEscapedString name
       write ": "
       putValue
     writeListWith ", " fieldWriters
@@ -37,10 +36,10 @@ instance : Encoder StringWriter where
 
   putVariant _idx name payload := do
     match payload with
-    | none => writeJsonString name
+    | none => writeEscapedString name
     | some p => do
       write "{"
-      writeJsonString name
+      writeEscapedString name
       write ": "
       p
       write "}"
@@ -362,8 +361,11 @@ instance : Decoder JsonDecoder where
 
   fail msg := failJson msg
 
+def JsonWriter.run (w : JsonWriter Unit) : String :=
+  StringWriter.run w
+
 def encode [Serialize α] (a : α) : String :=
-  StringWriter.run (Serialize.serialize a)
+  JsonWriter.run (Serialize.serialize a)
 
 def decode [Deserialize α] (input : String) : Except StringError α := do
   let value ← StringReader.run input parseValue
