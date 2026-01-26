@@ -60,6 +60,10 @@ instance : Encoder TomlWriter where
   putString s := writeValue ("\"" ++ escapeString s ++ "\"")
   putNull := { runState := fun s => ((), s), object := .null }
 
+  putOption opt := match opt with
+    | none => { runState := fun s => ((), s), object := .null }
+    | some p => p
+
   putList elems := do
     writeValue "["
     writeListWith ", " elems

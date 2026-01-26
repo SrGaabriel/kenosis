@@ -15,6 +15,12 @@ instance : Encoder Put where
   putString := putString
   putNull := pure ()
 
+  putOption opt := match opt with
+    | none => putWord8 0
+    | some p => do
+      putWord8 1
+      p
+
   putList elems := do
     putNatLeb128 elems.length
     for e in elems do

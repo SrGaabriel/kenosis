@@ -49,6 +49,10 @@ instance : Encoder JsonWriter where
   putString s := writeJsonString s
   putNull := write "null"
 
+  putOption opt := match opt with
+    | none => write "null"
+    | some p => p
+
   putList elems := do
     write "["
     writeListWith ", " elems

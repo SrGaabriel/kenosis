@@ -8,6 +8,7 @@ class Encoder (m : Type → Type) where
   putFloat : Float → m Unit
   putString : String → m Unit
   putNull : m Unit
+  putOption : Option (m Unit) → m Unit
   putList : List (m Unit) → m Unit
   putObject : List (String × m Unit) → m Unit
   putVariant : Nat → String → Option (m Unit) → m Unit
@@ -76,9 +77,7 @@ instance : Deserialize Unit where
   deserialize := Decoder.getNull
 
 instance [Serialize α] : Serialize (Option α) where
-  serialize opt := match opt with
-    | none => Encoder.putNull
-    | some a => Serialize.serialize a
+  serialize opt := Encoder.putOption (opt.map Serialize.serialize)
 
 instance [Deserialize α] : Deserialize (Option α) where
   deserialize := Decoder.getOption Deserialize.deserialize
