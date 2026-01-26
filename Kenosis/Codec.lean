@@ -77,19 +77,11 @@ instance : Deserialize Unit where
 
 instance [Serialize α] : Serialize (Option α) where
   serialize opt := match opt with
-    | none => Encoder.putVariant 0 "none" none
-    | some a => Encoder.putVariant 1 "some" (some (Serialize.serialize a))
+    | none => Encoder.putNull
+    | some a => Serialize.serialize a
 
 instance [Deserialize α] : Deserialize (Option α) where
-  deserialize := Decoder.matchVariant 2
-    (fun idx => match idx with
-      | 0 => pure none
-      | 1 => some <$> Deserialize.deserialize
-      | n => Decoder.fail s!"invalid Option index: {n}")
-    (fun name => match name with
-      | "none" => pure none
-      | "some" => some <$> Deserialize.deserialize
-      | s => Decoder.fail s!"unknown Option variant: {s}")
+  deserialize := Decoder.getOption Deserialize.deserialize
 
 instance [Serialize α] : Serialize (List α) where
   serialize xs := Encoder.putList (xs.map Serialize.serialize)

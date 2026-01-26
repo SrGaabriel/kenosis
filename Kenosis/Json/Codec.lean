@@ -1,23 +1,51 @@
 import Kenosis.Codec
 import Kenosis.Utils
-import Kenosis.String
 
 namespace Kenosis.Json
 
 open Kenosis
-open Kenosis.String
 
-structure JsonTag
+structure WriterState where
+  buffer : String
+  deriving Inhabited
 
-abbrev JsonWriter (α : Type) := StringWriter JsonTag α
-  
+def JsonWriter (α : Type) := WriterState → (α × WriterState)
+
+instance : Monad JsonWriter where
+  pure a := fun s => (a, s)
+  bind m f := fun s =>
+    let (a, s') := m s
+    f a s'
+
+def JsonWriter.run {α : Type} (w : JsonWriter α) : String :=
+  let (_, s) := w { buffer := "" }
+  s.buffer
+
+def write (str : String) : JsonWriter Unit := fun s =>
+  ((), { buffer := s.buffer ++ str })
+
+def writeJsonString (s : String) : JsonWriter Unit := do
+  write "\""
+  write (escapeString s)
+  write "\""
+
+def writeListWith (sep : String) (elems : List (JsonWriter Unit)) : JsonWriter Unit :=
+  match elems with
+  | [] => pure ()
+  | [e] => e
+  | e :: es => do
+    e
+    es.forM fun elem => do
+      write sep
+      elem
+
 instance : Encoder JsonWriter where
   putBool b := write (if b then "true" else "false")
   putNat n := write (toString n)
   putInt n := write (toString n)
   putInt64 n := write (toString n)
   putFloat f := write (toString f)
-  putString s := writeEscapedString s
+  putString s := writeJsonString s
   putNull := write "null"
 
   putList elems := do
@@ -28,7 +56,7 @@ instance : Encoder JsonWriter where
   putObject fields := do
     write "{"
     let fieldWriters := fields.map fun (name, putValue) => do
-      writeEscapedString name
+      writeJsonString name
       write ": "
       putValue
     writeListWith ", " fieldWriters
@@ -36,10 +64,10 @@ instance : Encoder JsonWriter where
 
   putVariant _idx name payload := do
     match payload with
-    | none => writeEscapedString name
+    | none => writeJsonString name
     | some p => do
       write "{"
-      writeEscapedString name
+      writeJsonString name
       write ": "
       p
       write "}"
@@ -53,8 +81,102 @@ inductive JsonValue where
   | obj (fields : List (String × JsonValue))
   deriving Repr, Inhabited
 
-partial def parseStringContent : StringReader String := do
-  let rec go (acc : String) : StringReader String := do
+inductive JsonError where
+  | unexpectedEof (expected : String)
+  | unexpectedChar (expected : String) (got : Char) (pos : Nat)
+  | unexpectedToken (expected : String) (got : String) (pos : Nat)
+  | invalidEscape (char : Char) (pos : Nat)
+  | invalidNumber (pos : Nat)
+  | trailingContent (pos : Nat)
+  | custom (msg : String) (pos : Nat)
+  deriving Repr, BEq
+
+instance : ToString JsonError where
+  toString
+    | .unexpectedEof expected => s!"unexpected end of input, expected {expected}"
+    | .unexpectedChar expected got pos => s!"at position {pos}: expected {expected}, got '{got}'"
+    | .unexpectedToken expected got pos => s!"at position {pos}: expected {expected}, got '{got}'"
+    | .invalidEscape c pos => s!"at position {pos}: invalid escape sequence '\\{c}'"
+    | .invalidNumber pos => s!"at position {pos}: invalid number"
+    | .trailingContent pos => s!"at position {pos}: trailing content after JSON value"
+    | .custom msg pos => s!"at position {pos}: {msg}"
+
+structure ReaderState where
+  input : String
+  pos : String.Pos.Raw
+  deriving Inhabited
+
+abbrev JsonReader (α : Type) := ReaderState → Except JsonError (α × ReaderState)
+
+instance : Monad JsonReader where
+  pure a := fun s => .ok (a, s)
+  bind m f := fun s =>
+    match m s with
+    | .ok (a, s') => f a s'
+    | .error e => .error e
+
+instance : MonadExceptOf JsonError JsonReader where
+  throw e := fun _ => .error e
+  tryCatch m handler := fun s =>
+    match m s with
+    | .ok result => .ok result
+    | .error e => handler e s
+
+def JsonReader.run (input : String) (r : JsonReader α) : Except JsonError α :=
+  match r { input, pos := 0 } with
+  | .ok (a, _) => .ok a
+  | .error e => .error e
+
+def getPos : JsonReader Nat := fun s => .ok (s.pos.byteIdx, s)
+
+def isEof : JsonReader Bool := fun s => .ok (s.pos >= s.input.rawEndPos, s)
+
+def peek : JsonReader (Option Char) := fun s =>
+  if s.pos < s.input.rawEndPos then
+    .ok (some (String.Pos.Raw.get s.input s.pos), s)
+  else
+    .ok (none, s)
+
+def advance : JsonReader Unit := fun s =>
+  .ok ((), { s with pos := String.Pos.Raw.next s.input s.pos })
+
+def consume : JsonReader Char := fun s =>
+  if s.pos < s.input.rawEndPos then
+    let c := String.Pos.Raw.get s.input s.pos
+    .ok (c, { s with pos := String.Pos.Raw.next s.input s.pos })
+  else
+    .error (.unexpectedEof "character")
+
+partial def skipWhitespace : JsonReader Unit := do
+  let c? ← peek
+  match c? with
+  | some ' ' | some '\n' | some '\r' | some '\t' => do
+    advance
+    skipWhitespace
+  | _ => pure ()
+
+def expectChar (expected : Char) : JsonReader Unit := do
+  skipWhitespace
+  let c ← consume
+  if c == expected then pure ()
+  else do
+    let pos ← getPos
+    throw (.unexpectedChar s!"'{expected}'" c pos)
+
+def expectString (expected : String) : JsonReader Unit := do
+  let rec go (chars : List Char) : JsonReader Unit :=
+    match chars with
+    | [] => pure ()
+    | c :: cs => do
+      let got ← consume
+      if got != c then do
+        let pos ← getPos
+        throw (.unexpectedChar s!"'{c}' in \"{expected}\"" got pos)
+      go cs
+  go expected.toList
+
+partial def parseStringContent : JsonReader String := do
+  let rec go (acc : String) : JsonReader String := do
     let c ← consume
     match c with
     | '"' => pure acc
@@ -70,7 +192,7 @@ partial def parseStringContent : StringReader String := do
         | 'b' => pure '\x08'
         | 'f' => pure '\x0C'
         | 'u' => do
-          let rec parseHex (n : Nat) (acc : UInt32) : StringReader UInt32 :=
+          let rec parseHex (n : Nat) (acc : UInt32) : JsonReader UInt32 :=
             if n == 0 then pure acc
             else do
               let d ← consume
@@ -94,12 +216,12 @@ partial def parseStringContent : StringReader String := do
     | c => go (acc.push c)
   go ""
 
-def parseJsonString : StringReader String := do
+def parseJsonString : JsonReader String := do
   skipWhitespace
   expectChar '"'
   parseStringContent
 
-partial def readDigits (acc : Nat) (hasDigits : Bool) : StringReader (Nat × Bool) := do
+partial def readDigits (acc : Nat) (hasDigits : Bool) : JsonReader (Nat × Bool) := do
   let c? ← peek
   match c? with
   | some c =>
@@ -110,7 +232,7 @@ partial def readDigits (acc : Nat) (hasDigits : Bool) : StringReader (Nat × Boo
       pure (acc, hasDigits)
   | none => pure (acc, hasDigits)
 
-partial def parseNumber : StringReader Float := do
+partial def parseNumber : JsonReader Float := do
   skipWhitespace
   let c? ← peek
   let negative ← match c? with
@@ -163,7 +285,7 @@ partial def parseNumber : StringReader Float := do
   pure (if negative then -result else result)
 
 mutual
-  partial def parseValue : StringReader JsonValue := do
+  partial def parseValue : JsonReader JsonValue := do
     skipWhitespace
     let c? ← peek
     match c? with
@@ -181,7 +303,7 @@ mutual
         throw (.unexpectedChar "JSON value" c pos)
     | none => throw (.unexpectedEof "JSON value")
 
-  partial def parseArray : StringReader (List JsonValue) := do
+  partial def parseArray : JsonReader (List JsonValue) := do
     expectChar '['
     skipWhitespace
     let c? ← peek
@@ -189,7 +311,7 @@ mutual
     | some ']' => do advance; pure []
     | _ => do
       let first ← parseValue
-      let rec go (acc : List JsonValue) : StringReader (List JsonValue) := do
+      let rec go (acc : List JsonValue) : JsonReader (List JsonValue) := do
         skipWhitespace
         let c? ← peek
         match c? with
@@ -206,7 +328,7 @@ mutual
         | none => throw (.unexpectedEof "']' or ','")
       go [first]
 
-  partial def parseObject : StringReader (List (String × JsonValue)) := do
+  partial def parseObject : JsonReader (List (String × JsonValue)) := do
     expectChar '{'
     skipWhitespace
     let c? ← peek
@@ -216,7 +338,7 @@ mutual
       let key ← parseJsonString
       expectChar ':'
       let value ← parseValue
-      let rec go (acc : List (String × JsonValue)) : StringReader (List (String × JsonValue)) := do
+      let rec go (acc : List (String × JsonValue)) : JsonReader (List (String × JsonValue)) := do
         skipWhitespace
         let c? ← peek
         match c? with
@@ -242,7 +364,7 @@ structure DecoderState where
 instance : Inhabited DecoderState where
   default := { value := JsonValue.null }
 
-abbrev JsonDecoder (α : Type) := DecoderState → Except StringError (α × DecoderState)
+abbrev JsonDecoder (α : Type) := DecoderState → Except JsonError (α × DecoderState)
 
 instance : Monad JsonDecoder where
   pure a := fun s => .ok (a, s)
@@ -251,7 +373,7 @@ instance : Monad JsonDecoder where
     | .ok (a, s') => f a s'
     | .error e => .error e
 
-def JsonDecoder.run (v : JsonValue) (d : JsonDecoder α) : Except StringError α :=
+def JsonDecoder.run (v : JsonValue) (d : JsonDecoder α) : Except JsonError α :=
   match d { value := v } with
   | .ok (a, _) => .ok a
   | .error e => .error e
@@ -361,14 +483,11 @@ instance : Decoder JsonDecoder where
 
   fail msg := failJson msg
 
-def JsonWriter.run (w : JsonWriter Unit) : String :=
-  StringWriter.run w
-
 def encode [Serialize α] (a : α) : String :=
   JsonWriter.run (Serialize.serialize a)
 
-def decode [Deserialize α] (input : String) : Except StringError α := do
-  let value ← StringReader.run input parseValue
+def decode [Deserialize α] (input : String) : Except JsonError α := do
+  let value ← JsonReader.run input parseValue
   let decoded : JsonDecoder α := @Deserialize.deserialize α _ JsonDecoder _ _
   JsonDecoder.run value decoded
 
