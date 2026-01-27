@@ -67,6 +67,36 @@ mutual
   deriving Serialize, Deserialize, BEq, Repr
 end
 
+inductive PrimTy where
+  | i8 | i16 | i32 | i64
+  | u8 | u16 | u32 | u64
+  | f32 | f64
+  | bool
+  | unit
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
+
+/-- Alloy types -/
+inductive Ty : Nat → Type where
+  /-- Primitive types -/
+  | prim : PrimTy → Ty n
+  /-- Pointer to a value of type t -/
+  | ptr : Ty n → Ty n
+  /-- Raw pointer (void*) -/
+  | rawPtr : Ty n
+  /-- Function pointer: (args) -> ret -/
+  | funcPtr : Array (Ty n) → Ty n → Ty n
+  /-- Struct type (product) with named fields -/
+  | struct : Array (String × Ty n) → Ty n
+  /-- Array type with static size -/
+  | array : Ty n → Nat → Ty n
+  /-- Tagged union (for ADTs): tag type + variant payloads -/
+  | tagged : Ty n → Array (Nat × Array (Ty n)) → Ty n
+  /-- Closure type: function pointer + environment pointer -/
+  | closure : Array (Ty n) → Ty n → Ty n
+  /-- Type variable (de Bruijn index into enclosing quantifiers) -/
+  | var : Fin n → Ty n
+  deriving Repr, BEq, Serialize, Deserialize
+
 def testJson (name : String) (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Bool := do
   IO.println s!"  Testing JSON: {name}"
   let encoded := Json.encode x

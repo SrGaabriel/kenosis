@@ -46,6 +46,17 @@ instance : Serialize Nat where
 instance : Deserialize Nat where
   deserialize := Decoder.getNat
 
+instance : Serialize (Fin n) where
+  serialize f := Encoder.putNat f.val
+
+instance : Deserialize (Fin n) where
+  deserialize := do
+    let val ← Decoder.getNat
+    if h : val < n then
+      return ⟨val, h⟩
+    else
+      Decoder.fail s!"Fin value {val} out of bounds for Fin {n}"
+
 instance : Serialize Int where
   serialize n := Encoder.putInt n
 
