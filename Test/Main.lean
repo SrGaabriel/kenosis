@@ -97,6 +97,19 @@ inductive Ty : Nat → Type where
   | var : Fin n → Ty n
   deriving Repr, BEq, Serialize, Deserialize
 
+inductive UnOp (n : Nat) where
+  | neg
+  | not
+  | trunc (to : PrimTy)
+  | zext (to : PrimTy)
+  | sext (to : PrimTy)
+  | itof (to : PrimTy)
+  | ftoi (to : PrimTy)
+  | bitcast (to : Ty n)
+  | ptrtoint (to : PrimTy)
+  | inttoptr
+  deriving BEq, Inhabited, Serialize, Deserialize
+
 def testJson (name : String) (x : α) [Serialize α] [Deserialize α] [BEq α] [Repr α] : IO Bool := do
   IO.println s!"  Testing JSON: {name}"
   let encoded := Json.encode x

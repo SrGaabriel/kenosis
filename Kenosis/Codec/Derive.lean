@@ -229,7 +229,7 @@ private def getTypeIndices (view : InductiveVal) : MetaM (Array (Name × TSyntax
       let typeStx : TSyntax `term ←
         if let .const typeName _ := type then
           pure ⟨mkCIdent typeName⟩
-        else if let .app fn _ := type then
+        else if let .app _ _ := type then
           let s ← PrettyPrinter.delab type
           pure ⟨s⟩
         else
