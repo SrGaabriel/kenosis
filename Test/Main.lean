@@ -75,6 +75,22 @@ inductive PrimTy where
   | unit
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
+structure Custom where
+  type_ : String
+  count : Nat
+  skipped : String
+  note : Option String
+  deriving BEq, Repr
+
+attribute [serial_name "type"] Custom.type_
+attribute [default] Custom.count
+attribute [skip] Custom.skipped
+attribute [default "skipped"] Custom.skipped
+attribute [default (some "fallback")] Custom.note
+
+deriving instance Serialize for Custom
+deriving instance Deserialize for Custom
+
 /-- Alloy types -/
 inductive Ty : Nat → Type where
   /-- Primitive types -/
@@ -207,6 +223,28 @@ def main : IO Unit := do
 
   let people := [Person.mk "Alice" 30, Person.mk "Bob" 25, Person.mk "Charlie" 35]
   allPassed := allPassed && (← testBoth "List of Persons" people)
+
+  let custom := Custom.mk "widget" 0 "skipped" (some "fallback")
+  allPassed := allPassed && (← testBoth "Custom (serial_name override)" custom)
+  let customJson := Json.encode custom
+  if customJson == "{\"type\": \"widget\", \"count\": 0, \"note\": \"fallback\"}" then
+    IO.println "  Custom JSON key override successful"
+  else
+    IO.println s!"  Custom JSON key override failed: {customJson}"
+    allPassed := false
+
+  let customMissing := "{\"type\": \"widget\"}"
+  match Json.decode (α := Custom) customMissing with
+  | .ok c =>
+    let expected := Custom.mk "widget" 0 "skipped" (some "fallback")
+    if c == expected then
+      IO.println "  Custom defaults applied successfully"
+    else
+      IO.println s!"  Custom defaults mismatch: {repr c}"
+      allPassed := false
+  | .error e =>
+    IO.println s!"  Custom defaults decode failed: {e}"
+    allPassed := false
 
   IO.println "Custom Enums"
   allPassed := allPassed && (← testBoth "Status (active)" Status.active)

@@ -25,6 +25,7 @@ class Decoder (m : Type → Type) where
   getOption : m α → m (Option α)
   withObject : m α → m α
   getField : String → m α → m α
+  getFieldOpt : String → m α → m (Option α)
   matchVariant : Nat → (Nat → m α) → (String → m α) → m α
   fail : String → m α
 

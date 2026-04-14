@@ -283,6 +283,15 @@ instance : Decoder JsonDecoder where
       | none => failJson s!"missing field '{name}'"
     | _ => failJson "expected object"
 
+  getFieldOpt name action := do
+    let v ← getValue
+    match v with
+    | JsonValue.obj fields =>
+      match fields.find? (fun (k, _) => k == name) with
+      | some (_, fieldValue) => some <$> withValue fieldValue action
+      | none => pure none
+    | _ => failJson "expected object"
+
   matchVariant _numCtors _byIndex byName := do
     let v ← getValue
     match v with

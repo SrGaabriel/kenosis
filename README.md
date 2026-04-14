@@ -12,7 +12,7 @@ Kenosis is a simple and lightweight serialization/deserialization library for Le
 - [x] TOML support (encoding and decoding)
 - [x] Monadic deserializing
 - [x] Unified Serialize/Deserialize typeclasses (format-agnostic)
-- [ ] More flexible serialization (serial names, skipping fields, etc.)
+- [x] Flexible serialization (serial names, skipping fields, etc.)
 - [ ] Configurable rendering
 - [ ] Little-endian binary variants
 - [ ] Streaming/incremental parsing for large inputs

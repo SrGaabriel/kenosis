@@ -5,20 +5,133 @@ namespace Kenosis
 
 open Lean Elab Command Term Meta Syntax
 
+abbrev SerialNameMap := NameMap String
+
+initialize serialNameExt : SimplePersistentEnvExtension (Name × String) SerialNameMap ←
+  registerSimplePersistentEnvExtension {
+    name := `Kenosis.serialNameExt
+    addEntryFn := fun s (n, v) => s.insert n v
+    addImportedFn := fun entries =>
+      entries.foldl (init := {}) fun acc arr =>
+        arr.foldl (init := acc) fun acc' (n, v) => acc'.insert n v
+  }
+
+private def setSerialName (declName : Name) (fieldName : String) : CoreM Unit := do
+  modifyEnv fun env => serialNameExt.addEntry env (declName, fieldName)
+
+private def getSerialName? (env : Environment) (structName : Name) (fieldName : Name) : Option String :=
+  let byProj := (serialNameExt.getState env).find? (structName ++ fieldName)
+  let byField := (serialNameExt.getState env).find? fieldName
+  byProj.orElse (fun _ => byField)
+
+syntax (name := serialNameAttr) "serial_name " str : attr
+
+initialize
+  registerBuiltinAttribute {
+    name := `serialNameAttr
+    descr := "Override serialized field name for structure projections"
+    add := fun declName stx _kind => do
+      let value :=
+        match stx with
+        | `(attr| serial_name $s:str) => s.getString
+        | _ => ""
+      if value.isEmpty then
+        throwError "invalid [serial_name] attribute syntax"
+      setSerialName declName value
+    erase := fun _ => throwError "[serial_name] does not support erasing"
+  }
+
+inductive FieldDefault where
+  | none
+  | typeDefault
+  | expr (term : Syntax)
+  deriving Inhabited
+
+structure FieldAttr where
+  skip : Bool := false
+  default : FieldDefault := .none
+  deriving Inhabited
+
+abbrev FieldAttrMap := NameMap FieldAttr
+
+initialize fieldAttrExt : SimplePersistentEnvExtension (Name × FieldAttr) FieldAttrMap ←
+  registerSimplePersistentEnvExtension {
+    name := `Kenosis.fieldAttrExt
+    addEntryFn := fun s (n, v) => s.insert n v
+    addImportedFn := fun entries =>
+      entries.foldl (init := {}) fun acc arr =>
+        arr.foldl (init := acc) fun acc' (n, v) => acc'.insert n v
+  }
+
+private def mergeFieldAttr (old new : FieldAttr) : FieldAttr :=
+  { skip := old.skip || new.skip
+    default := match new.default with
+      | .none => old.default
+      | _ => new.default }
+
+private def setFieldAttr (declName : Name) (attr : FieldAttr) : CoreM Unit := do
+  modifyEnv fun env =>
+    let state := fieldAttrExt.getState env
+    let merged := match state.find? declName with
+      | some existing => mergeFieldAttr existing attr
+      | none => attr
+    fieldAttrExt.addEntry env (declName, merged)
+
+private def setSkip (declName : Name) : CoreM Unit :=
+  setFieldAttr declName { skip := true }
+
+private def setDefault (declName : Name) (default : FieldDefault) : CoreM Unit :=
+  setFieldAttr declName { default := default }
+
+private def getFieldAttr (env : Environment) (structName fieldName : Name) : FieldAttr :=
+  let state := fieldAttrExt.getState env
+  let byProj := state.find? (structName ++ fieldName)
+  let byField := state.find? fieldName
+  match byProj with
+  | some attr => attr
+  | none => byField.getD {}
+
+syntax (name := skipAttr) "skip" : attr
+syntax (name := defaultAttr) "default" (ppSpace term)? : attr
+
+initialize
+  registerBuiltinAttribute {
+    name := `skipAttr
+    descr := "Skip field during serialization/deserialization"
+    add := fun declName _stx _kind => do
+      setSkip declName
+    erase := fun _ => throwError "[skip] does not support erasing"
+  }
+
+initialize
+  registerBuiltinAttribute {
+    name := `defaultAttr
+    descr := "Provide default value for missing or skipped fields"
+    add := fun declName stx _kind => do
+      match stx with
+      | `(attr| default) => setDefault declName .typeDefault
+      | `(attr| default $t:term) => setDefault declName (.expr t)
+      | _ => throwError "invalid [default] attribute syntax"
+    erase := fun _ => throwError "[default] does not support erasing"
+  }
+
 private def mkRawIdent (n : Name) : Ident :=
   ⟨Syntax.ident SourceInfo.none n.toString.toRawSubstring n []⟩
 
 private def mkRawQualIdent (n : Name) : Ident := mkRawIdent n
 
-private def getStructureFields (structName : Name) : MetaM (Array (Name × Name)) := do
+private def getStructureFields (structName : Name) : MetaM (Array (Name × Name × String × FieldAttr)) := do
   let env ← getEnv
   let some structInfo := getStructureInfo? env structName | return #[]
-  let mut fields : Array (Name × Name) := #[]
+  let mut fields : Array (Name × Name × String × FieldAttr) := #[]
   for field in structInfo.fieldNames do
-    fields := fields.push (field, structName ++ field)
+    let projName := structName ++ field
+    let serialName := (getSerialName? env structName field).getD (toString field)
+    let fieldAttr := getFieldAttr env structName field
+    fields := fields.push (field, projName, serialName, fieldAttr)
   return fields
 
-private def mkStructSerializeBody (_structName : Name) (fields : Array (Name × Name)) (argName : Name) : MetaM (TSyntax `term) := do
+private def mkStructSerializeBody (_structName : Name) (fields : Array (Name × Name × String × FieldAttr)) (argName : Name) : MetaM (TSyntax `term) := do
   let argIdent := mkRawIdent argName
   let serializeFn := mkCIdent ``Serialize.serialize
   let putObjectFn := mkCIdent ``Encoder.putObject
@@ -27,13 +140,16 @@ private def mkStructSerializeBody (_structName : Name) (fields : Array (Name × 
     `($putObjectFn [])
   else
     let mut fieldExprs : Array (TSyntax `term) := #[]
-    for (fieldName, projName) in fields do
-      let fieldStr := Syntax.mkStrLit (toString fieldName)
-      let projIdent := mkCIdent projName
-      let fieldAccess ← `($projIdent $argIdent)
-      let serializedField ← `($serializeFn $fieldAccess)
-      let pair ← `(($fieldStr, $serializedField))
-      fieldExprs := fieldExprs.push pair
+    for (_fieldName, projName, serialName, fieldAttr) in fields do
+      if fieldAttr.skip then
+        pure ()
+      else
+        let fieldStr := Syntax.mkStrLit serialName
+        let projIdent := mkCIdent projName
+        let fieldAccess ← `($projIdent $argIdent)
+        let serializedField ← `($serializeFn $fieldAccess)
+        let pair ← `(($fieldStr, $serializedField))
+        fieldExprs := fieldExprs.push pair
     `($putObjectFn [$fieldExprs,*])
 
 private def mkCtorSerializeAlt (view : InductiveVal) (ctorIdx : Nat) (ctorName : Name) (recFnMap : List (Name × Ident) := []) : MetaM (Syntax × Syntax) := do
@@ -606,26 +722,57 @@ def mkSerializeHandler (declNames : Array Name) : CommandElabM Bool := do
 
 initialize registerDerivingHandler ``Serialize mkSerializeHandler
 
-private def getStructureFieldNames (structName : Name) : MetaM (Array Name) := do
+private def getStructureFieldNames (structName : Name) : MetaM (Array (Name × String × FieldAttr)) := do
   let env ← getEnv
   let some structInfo := getStructureInfo? env structName | return #[]
-  return structInfo.fieldNames
+  let mut fields : Array (Name × String × FieldAttr) := #[]
+  for field in structInfo.fieldNames do
+    let serialName := (getSerialName? env structName field).getD (toString field)
+    let fieldAttr := getFieldAttr env structName field
+    fields := fields.push (field, serialName, fieldAttr)
+  return fields
 
-private def mkStructDeserializeBody (structName : Name) (fields : Array Name) (argName : Name) : MetaM (TSyntax `term) := do
+private def mkStructDeserializeBody (structName : Name) (fields : Array (Name × String × FieldAttr)) (argName : Name) : MetaM (TSyntax `term) := do
   let _ := mkRawIdent argName
-  let ctorIdent := mkCIdent (structName ++ `mk)
-  let getFieldFn := mkCIdent ``Decoder.getField
-  let deserializeFn := mkCIdent ``Deserialize.deserialize
+  let ctorIdent : TSyntax `term := ⟨mkCIdent (structName ++ `mk)⟩
+  let pureFn : TSyntax `term := ⟨mkCIdent ``pure⟩
+  let getFieldFn : TSyntax `term := ⟨mkCIdent ``Decoder.getField⟩
+  let getFieldOptFn : TSyntax `term := ⟨mkCIdent ``Decoder.getFieldOpt⟩
+  let deserializeFn : TSyntax `term := ⟨mkCIdent ``Deserialize.deserialize⟩
+
+  let mkDefaultTerm (fieldName : Name) (attr : FieldAttr) : MetaM (TSyntax `term) := do
+    match attr.default with
+    | .typeDefault => pure ⟨mkCIdent ``default⟩
+    | .expr t => pure ⟨t⟩
+    | .none => throwError s!"field '{fieldName}' is marked [skip] but has no [default]"
+
+  let mkFieldExpr (fieldName : Name) (serialName : String) (attr : FieldAttr) (idx : Nat) : MetaM (TSyntax `term) := do
+    let fieldNameStr : TSyntax `term := ⟨Syntax.mkStrLit serialName⟩
+    if attr.skip then
+      let defaultTerm ← mkDefaultTerm fieldName attr
+      `($pureFn $defaultTerm)
+    else
+      match attr.default with
+      | .none =>
+          `($getFieldFn $fieldNameStr $deserializeFn)
+      | _ =>
+          let defaultTerm ← mkDefaultTerm fieldName attr
+          let optIdent := mkRawIdent (Name.mkSimple s!"__opt{idx}")
+          let getDIdent : TSyntax `term := ⟨mkCIdent ``Option.getD⟩
+          `($getFieldOptFn $fieldNameStr $deserializeFn >>= fun $optIdent =>
+            $pureFn ($getDIdent $optIdent $defaultTerm)
+          )
 
   if fields.isEmpty then
     `(pure $ctorIdent)
   else
-    let firstFieldStr := Syntax.mkStrLit (toString fields[0]!)
-    let mut result ← `($ctorIdent <$> $getFieldFn $firstFieldStr $deserializeFn)
+    let (firstName, firstSerial, firstAttr) := fields[0]!
+    let firstExpr ← mkFieldExpr firstName firstSerial firstAttr 0
+    let mut result ← `($ctorIdent <$> $firstExpr)
 
     for i in [1:fields.size] do
-      let fieldNameStr := Syntax.mkStrLit (toString fields[i]!)
-      let fieldExpr ← `($getFieldFn $fieldNameStr $deserializeFn)
+      let (fieldName, serialName, fieldAttr) := fields[i]!
+      let fieldExpr ← mkFieldExpr fieldName serialName fieldAttr i
       result ← `($result <*> $fieldExpr)
 
     pure result

@@ -65,6 +65,7 @@ instance : Decoder Get where
   withObject action := action
 
   getField _name action := action
+  getFieldOpt _name action := some <$> action
 
   matchVariant numCtors byIndex _byName := do
     let tag ← getWord8

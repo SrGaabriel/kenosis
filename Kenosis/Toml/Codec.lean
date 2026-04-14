@@ -884,6 +884,15 @@ instance : Decoder TomlDecoder where
       | none => failToml s!"missing field '{name}'"
     | _ => failToml "expected table"
 
+  getFieldOpt name action := do
+    let v ← getTomlValue
+    match v with
+    | TomlValue.table fields =>
+      match fields.find? (fun (k, _) => k == name) with
+      | some (_, fieldValue) => some <$> withTomlValue fieldValue action
+      | none => pure none
+    | _ => failToml "expected table"
+
   matchVariant _numCtors _byIndex byName := do
     let v ← getTomlValue
     match v with
