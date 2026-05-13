@@ -86,6 +86,17 @@ inductive JsonValue where
   | obj (fields : List (String × JsonValue))
   deriving Repr, Inhabited
 
+partial def serializeJsonValue [Monad m] [Encoder m] : JsonValue → m Unit
+  | JsonValue.null => Encoder.putNull
+  | JsonValue.bool b => Encoder.putBool b
+  | JsonValue.num n => Encoder.putFloat n
+  | JsonValue.str s => Encoder.putString s
+  | JsonValue.arr xs => Encoder.putList (xs.map serializeJsonValue)
+  | JsonValue.obj fields => Encoder.putObject (fields.map fun (k, v) => (k, serializeJsonValue v))
+
+instance : Serialize JsonValue where
+  serialize := serializeJsonValue
+
 abbrev JsonReader (α : Type) := UtfReader α
 abbrev JsonError := ReaderError
 
@@ -300,7 +311,35 @@ instance : Decoder JsonDecoder where
     | JsonValue.obj _ => failJson "expected single-key object for variant"
     | _ => failJson "expected string or object for variant"
 
+  decodeAny visitor := do
+    let val ← getValue
+    match val with
+    | JsonValue.null => visitor.onNull
+    | JsonValue.bool b => visitor.onBool b
+    | JsonValue.num n => visitor.onNumber n
+    | JsonValue.str s => visitor.onString s
+    | JsonValue.arr xs =>
+      visitor.onList (fun decode => xs.mapM (withValue · decode))
+    | JsonValue.obj fields =>
+      visitor.onObject fun decode =>
+        fields.mapM fun (k, x) => do
+          let b ← withValue x decode
+          pure (k, b)
+
   fail msg := failJson msg
+
+partial def deserializeJsonValue [Monad m] [Decoder m] : m JsonValue :=
+  Decoder.decodeAny {
+    onNull := pure JsonValue.null
+    onBool := fun b => pure (JsonValue.bool b)
+    onNumber := fun n => pure (JsonValue.num n)
+    onString := fun s => pure (JsonValue.str s)
+    onList := fun decode => JsonValue.arr <$> decode deserializeJsonValue
+    onObject := fun decode => JsonValue.obj <$> decode deserializeJsonValue
+  }
+
+instance : Deserialize JsonValue where
+  deserialize := deserializeJsonValue
 
 def encode [Serialize α] (a : α) : String :=
   JsonWriter.run (Serialize.serialize a)

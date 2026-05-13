@@ -74,6 +74,9 @@ instance : Decoder Get where
     else
       failInvalid s!"invalid variant tag: {tag}, expected < {numCtors}"
 
+  decodeAny _visitor :=
+    failInvalid "binary format is not self-describing; decodeAny is unsupported"
+
   fail msg := failInvalid msg
 
 def encode [Serialize α] (a : α) : ByteArray :=

@@ -901,6 +901,20 @@ instance : Decoder TomlDecoder where
     | TomlValue.table _ => failToml "expected single-key table for variant"
     | _ => failToml "expected string or table for variant"
 
+  decodeAny visitor := do
+    let val ← getTomlValue
+    match val with
+    | TomlValue.bool b => visitor.onBool b
+    | TomlValue.num n => visitor.onNumber n
+    | TomlValue.str s => visitor.onString s
+    | TomlValue.arr xs =>
+      visitor.onList (fun decode => xs.mapM (withTomlValue · decode))
+    | TomlValue.table fields =>
+      visitor.onObject fun decode =>
+        fields.mapM fun (k, x) => do
+          let b ← withTomlValue x decode
+          pure (k, b)
+
   fail msg := failToml msg
 
 def encode [Serialize α] (a : α) : String :=

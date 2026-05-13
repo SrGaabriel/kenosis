@@ -13,6 +13,14 @@ class Encoder (m : Type → Type) where
   putObject : List (String × m Unit) → m Unit
   putVariant : Nat → String → Option (m Unit) → m Unit
 
+structure Visitor (m : Type → Type) (α : Type) where
+  onNull : m α
+  onBool : Bool → m α
+  onNumber : Float → m α
+  onString : String → m α
+  onList : ({β : Type} → m β → m (List β)) → m α
+  onObject : ({β : Type} → m β → m (List (String × β))) → m α
+
 class Decoder (m : Type → Type) where
   getBool : m Bool
   getNat : m Nat
@@ -27,6 +35,7 @@ class Decoder (m : Type → Type) where
   getField : String → m α → m α
   getFieldOpt : String → m α → m (Option α)
   matchVariant : Nat → (Nat → m α) → (String → m α) → m α
+  decodeAny : {α : Type} → Visitor m α → m α
   fail : String → m α
 
 class Serialize (α : Type) where
