@@ -84,7 +84,7 @@ inductive JsonValue where
   | str (s : String)
   | arr (xs : List JsonValue)
   | obj (fields : List (String × JsonValue))
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, BEq
 
 partial def serializeJsonValue [Monad m] [Encoder m] : JsonValue → m Unit
   | JsonValue.null => Encoder.putNull
