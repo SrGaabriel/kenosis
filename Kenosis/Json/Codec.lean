@@ -4,7 +4,7 @@ import Kenosis.Utf
 
 namespace Kenosis.Json
 
-open Kenosis
+open Kenosis Kenosis.Serialize
 
 structure WriterState where
   buffer : String
@@ -85,6 +85,19 @@ inductive JsonValue where
   | arr (xs : List JsonValue)
   | obj (fields : List (String × JsonValue))
   deriving Repr, Inhabited
+
+partial def serializeJsonValue [Monad m] [Encoder m] : JsonValue → m Unit
+  | JsonValue.null => Encoder.putNull
+  | JsonValue.bool b => Encoder.putBool b
+  | JsonValue.num n => Encoder.putFloat n
+  | JsonValue.str s => Encoder.putString s
+  | JsonValue.arr xs =>
+      Encoder.putList (xs.map serializeJsonValue)
+  | JsonValue.obj fields =>
+      Encoder.putObject (fields.map fun (k, v) => (k, serializeJsonValue v))
+
+instance : Serialize JsonValue where
+  serialize := serializeJsonValue
 
 abbrev JsonReader (α : Type) := UtfReader α
 abbrev JsonError := ReaderError
